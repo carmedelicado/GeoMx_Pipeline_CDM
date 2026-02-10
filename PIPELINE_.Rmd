@@ -1,0 +1,1703 @@
+---
+title: "Pipeline para el análisis de datos de transcriptómica espacial GeoMx DSP"
+author: "Carme Delicado Mercader"
+date: "2025-12-04"
+output: 
+ html_document:
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: true
+      smooth_scroll: true
+    theme: journal
+    highlight: kate
+    df_print: paged
+    code_folding: hide
+---
+
+El desarrollo de este pipeline está basado en las dos herramientas existentes para analizar datos provinentes de la plataforma GeoMx DSP: GeoMxTools y StandR.
+
+Se hace uso de GeoMxTools, el pipeline desarrollado por Nanostring que trabaja con NanoStringGeoMxSet como objeto principal, para la carga y visualización de los datos.
+
+Posteriormente se implementa el resto del pipeline con StandR, que fue desarrollado en 2023, y contiene métodos más robustos. Trabaja con SpatialExperiment como objeto, lo que proporciona facilidad a la hora de integrar funciones de otros pipelines para los análisis posteriores.
+
+Las viñetas de ambos pipelines se detallan aquí:
+
+  - GeoMxTools: https://bioconductor.org/packages/devel/workflows/vignettes/GeoMxWorkflows/inst/doc/GeomxTools_RNA-NGS_Analysis.html#8_Visualizing_DE_Genes
+
+  - StandR: https://davislaboratory.github.io/GeoMXAnalysisWorkflow/articles/GeoMXAnalysisWorkflow.html
+
+```{r setup, include=FALSE, message=FALSE, warning=FALSE}
+knitr::opts_knit$set(root.dir = "C:/Users/carme/OneDrive/Escritorio/Pipeline/Data")
+
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install(c("GeomxTools","standR"))
+
+```
+
+# 1. Preparación del entorno de trabajo
+
+## 1.1 Instalación de paquetes necesarios
+
+Para la ejecución de este Pipeline se hará uso de funciones del pipeline de GeomxTools y de StandR.
+
+Cargamos las librerías necesarias.
+
+## 1.2 Cargar librerías
+```{r, warning=FALSE, message=FALSE}
+#Librerías específicas de StandR
+library(standR)
+library(SpatialExperiment)
+
+#Librerías específicas de GeomxTools
+library(GeomxTools)
+
+#Librerías para ordenar datos y encadenar funciones
+library(tidyverse)
+library(dplyr)
+
+#Librerías para graficar
+library(ggplot2)
+library(networkD3)
+library(ggforce)
+library(ggalluvial)
+library(ggrepel)
+
+#Descomprime archivos gzip (.gz) y .tar
+library(R.utils)
+
+#Cálculo logCPM
+library(edgeR)
+
+#tablas
+library(knitr)
+
+#Tabla interactiva
+library(DT)
+
+#Excel
+library(readxl)
+library(writexl)
+
+#Limma pipeline
+library(limma)
+```
+
+# 2. Dataset
+
+## 2.1 Introducción al dataset
+
+El GBM es el tumor cerebral primario maligno más agresivo y común entre la población adulta. Tiene un crecimiento muy rápido y presenta resistencia a las terapias estándares, por lo que en la mayoría de casos los pacientes experimentan recurrencia del tumor.
+
+La inmunoterapia ha supuesto un avance significativo en el tratamiento de varios tipos de cáncer, impulsando respuestas al aprovechar y potenciar los mecanismos naturales del sistema inmunitario para reconocer y eliminar las células tumorales. Un ejemplo de inmunoterapia para tratar los casos recurrentes de GBM es el bloqueo entre el PD-1 y su ligando PD-1L. Cuando se bloquea esta interacción, los inhibidores de PD-1 restauran la actividad de las células T, permitiendo que las células T citotóxicas eliminen las células tumorales.
+
+El éxito de esta práctica es confuso en cuanto a resultados, hasta la fecha no se ha demostrado si el bloqueo de PD-1 induce cambios significativos en el microambiente tumoral (TME) del GBM, y por lo tanto, tiene un impacto en la supervivencia de los pacientes con GBM. 
+
+Para abordar esta cuestión se han llevado a cabo varios estudios recientemente, en los cuales los pacientes reciben tratamiento con un neoadyuvante (anti-PD-1) antes de la resección tumoral, lo que permite analizar el tejido tumoral poco después del tratamiento. De esta forma, se intenta evaluar si ha habido una activación por parte del sistema inmunitario tras el bloqueo del ligando.
+
+Por lo tanto, el objetivo del estudio es utilizar la técnica GeoMx DSP para evaluar el efecto del bloqueo de PD-1 en células tumorales y *Tumor Associated Macrophages* (TAM). El análisis de estas zonas, corresponde con la aplicación más común de GeoMx DSP, el estudio de la población tumoral y su microambiente.
+
+En este estudio, se seleccionan 30 pacientes con GBM recurrente.
+
+  - 20 pacientes reciben el tratamiento con Nivolumab, el neoadyuvante, que bloquea la interacción de PD-1 y su ligando.
+  
+  - 10 pacientes son controles emparejados no tratados.
+
+Los 20 pacientes, antes de ser seleccionados, han sido testeados para comprobar la participación y activación de células T en cuanto se les bloqueaba la interacción PD-1 - PD-1L. 
+
+Se pretende observar si la actividad inmunitaria de las células T va acompañada de cambios transcripcionales en las células tumorales y los TAM. Se seleccionan zonas con alta densidad de SOX2+, que son indicadores de células tumorales, y IBA1+, indicadores de TAM.
+
+Los hallazgos publicados por el estudio, de donde se extrae el dataset, dictan que no se observan cambios transcripcionales significativos en las células tumorales o los TAM tras el bloqueo de PD-1. Por lo tanto, sugieren que el impacto de la monoterapia neoadyuvante con PD-1 en el GBM recurrente puede ser limitado. Para más información: https://pubmed.ncbi.nlm.nih.gov/40960500/
+
+## 2.2 Cargar dataset
+
+Se accede a los datos mediante el siguiente URL: https://zenodo.org/records/16839828
+
+Se encuentran diferentes archivos disponibles para descargar: 
+
+  - RAW.tar.gz: archivos dcc (GeoMx output) de todas las AOI (i.e., raw data)
+	
+  - metadata.csv.tar.gz: archivo separado por comas de las AOIs utilizados en ester análisis.
+
+  - sampleAnno.xlsx.tar.gz: archivo excel que contiene la anotación del fichero dcc.
+	
+  - Hs_R_NGS_WTA_v1.0.pkc.tar.gz: archivo pkc que contiene la asociación de sonda-gen.
+
+  - normalized.txt.tar.gz: archivo separado por tabulaciones que contiene la matriz de conteos normalizada y corregida por lotes de las AOIs que se usaron en este análisis.
+
+El objetivo de este experimento es implementar el pipeline completo, que cuenta con el análisis de datos desde el preprocesamiento hasta los análisis posteriores. Por dicha razón, es de nuestro interés descargarse los datos curdos y no los normalizados, a parte de todo el resto de archivos. 
+
+Se configura el directorio de trabajo.
+```{r}
+datadir<-("C:/Users/carme/OneDrive/Escritorio/Pipeline/Data")
+list.files(datadir)
+```
+
+Los archivos tienen extensiones .tar y .gz.
+
+  .tar sirve para empaquetar varios archivos en uno solo.
+
+  .gz comprime el archivo único usando gzip.
+
+Para acceder a los datos se deben descomprimir los archivos mediante la función untar().
+```{r}
+
+untar(file.path(datadir,"RAW.tar.gz"), exdir = file.path(datadir,"RAW_data"))
+
+
+untar(file.path(datadir,"metadata.csv.tar.gz"), exdir = file.path(datadir,"metadata"))
+
+
+untar(file.path(datadir,"sampleAnno.xlsx.tar.gz"), exdir = file.path(datadir,"sampleAnno"))
+
+
+untar(file.path(datadir,"Hs_R_NGS_WTA_v1.0.pkc.tar.gz"), exdir= file.path(datadir,"PKCFiles"))
+```
+
+Se listan los archivos de las carpetas descomprimidas para conocer su contenido.
+```{r}
+list.files(file.path(datadir, "RAW_data"))
+list.files(file.path(datadir, "metadata"))
+list.files(file.path(datadir, "sampleAnno"))
+list.files(file.path(datadir, "PKCFiles"))
+```
+
+Los archivos de trabajo se obtienen directamente en tres de los cuatro casos. Sin embargo, en la carpeta denominada `DCC-20230619`, se encuentran los archivos con extensiones `.dcc` correspondientes a cada AOI.
+
+Se listan los cinco primeros archivos de `DCC-20230619`, para conocer su interior.
+```{r}
+list.files(file.path(datadir, "RAW_data", "DCC-20230619"))[1:5]
+```
+
+Para cargar los datos el pipeline de GeoMxTools utiliza la función `readNanoStringGeoMxSet()` que unifica los archivos en un único objeto y que necesita los siguientes argumentos:
+
+`dccFiles`	<- Un vector de caracteres que contiene la ruta al fichero DCC, que contiene los archivos `.dcc`.
+
+`pkcFiles`	<- Un vector de caracteres que representa la ruta correspondiente al fichero PKC `.pkc`.
+
+`phenoData`	<- Un dataframe que contiene los datos fenotípicos. Si éste y `phenoDataFile` están disponibles, se usa `phenoData`.
+
+`phenoDataFile`	<- Una cadena de texto que representa la ruta al archivo correspondiente de datos fenotípicos. El archivo de datos puede ser una hoja de laboratorio, un archivo Excel u otro archivo delimitado. Se recomienda usar la hoja de laboratorio en el mismo orden exacto en el que se proporcionan las muestras.
+
+`phenoDataDccColName`	<- Cadena de texto que identifica la columna del archivo `phenoData` o `phenoDataFile` que contiene el identificador único de cada muestra.
+
+Se crean estos objetos.
+```{r}
+dccFiles <- dir(file.path(datadir, "RAW_data/DCC-20230619"), 
+                pattern = ".dcc$", #guarda solo docs acabados con .dcc
+                full.names = TRUE, 
+                recursive = TRUE)
+
+pkcFiles <- file.path(datadir,"PKCFiles", "Hs_R_NGS_WTA_v1.0.pkc")
+
+phenoDataFile <- file.path(datadir,"sampleAnno","phenoDataFile.xlsx")
+```
+
+El fichero Excel viene con 21 filas que se deben eliminar antes de crear el objeto `datos`.
+```{r}
+sampleanno_excel <- read_excel(path = paste(datadir,"sampleAnno","sampleAnno.xlsx", sep = "/"),
+                   skip = 21 )
+write_xlsx(sampleanno_excel, path = paste(datadir,"sampleAnno","phenoDataFile.xlsx", sep = "/"))
+```
+
+Se unifican los objetos en un único objeto llamado `datos` de clase `NanoStringGeoMxSet`.
+```{r}
+datos <- readNanoStringGeoMxSet(dccFiles = dccFiles,
+                                pkcFiles = pkcFiles,
+                                phenoDataFile = phenoDataFile,
+                                phenoDataSheet = "Sheet1",
+                                phenoDataDccColName = "Sample_ID")
+```
+
+Aparecen avisos que indican la eliminación de aquellos ficheros que no contienen la información necesaria para ser procesados e incluidos en el estudio.
+
+## 2.3 Ajustes y visualización del dataset
+
+Se accede a la información básica del conjunto de datos. 
+
+El objeto `datos` es un objeto de clase `NanoStringGeoMxSet`, que proviene del paquete `GeomxTools`.
+
+Para poder explorarlo hay que conocer las funciones específicas del pipeline `GeomxTools`.
+
+Mediante la función `exprs()` se puede acceder a la matriz de conteos, que representa el número total de sondas que contiene cada AOI.
+```{r}
+counts <- exprs(datos)
+dim(counts) # 18815   705
+```
+
+Se cuenta con un dataset que contiene `r nrow(counts)` sondas y `r ncol(counts)` AOIs.
+
+Para acceder a las anotaciones de los genes se utiliza la función `fData(datos)`, que establece la relación sonda-gen.
+```{r}
+annotation_genes <- fData(datos)
+```
+
+Las Áreas De Iluminación (AOI) se conocen también como segmentos. Una vez elegidas las Regiones De Interés (ROI) del tejido, estas se pueden segmentar en las distintas áreas celulares que se quieren secuenciar. Solo estas áreas se van a iluminar con UV para que se produzca la liberación del identificador único del mRNA, lo que nos aportará la información sobre los mRNA se encuentran en esa área. De esta forma, una ROI puede contener más de una AOI, o bien, si una ROI solo tiene una AOI, los conteos de esa ROI coinciden con los de la AOI.
+
+Para acceder a las anotaciones de las AOIs se usa la función `pData()`.
+```{r}
+annotation_AOI <- pData(datos)
+```
+
+Se exploran las distintas AOI de cada tipo, es decir, las zonas celulares que han sido iluminadas.
+
+Además, se analiza el número de ROIs totales y la cantidad de AOIs presentes en cada ROI.
+```{r}
+table(annotation_AOI$Aoi)
+length(unique(annotation_AOI$Roi))
+table(annotation_AOI$Roi)
+```
+
+Las AOI se dividen en `r table(annotation_AOI$Aoi)[1]` GFAP, `r table(annotation_AOI$Aoi)[2]` Iba1 y `r table(annotation_AOI$Aoi)[3]` Sox2, que provienen de un total de `r length(unique(annotation_AOI$Roi))` ROIs. 
+
+En el apartado 2.2 se ha descargado el archivo `metadata`, no utilizado hasta ahora. Este contiene las anotaciones de las AOIs utilizadas para el análisis de este experimento. Se descarga y se explora para conocer qué diferencias frente al `annotation_AOI` contiene.  
+```{r}
+metadata <- read.csv(file.path(datadir, "metadata", "metadata.csv"))
+dim(metadata) # 482  63
+```
+
+`metadata` contiene `r dim(metadata)[1]` AOI a diferencia de las `r nrow(annotation_AOI)` anteriores.
+
+También contiene `r dim(metadata)[2]` variables a diferencia de las `r ncol(annotation_AOI)` anteriores.
+
+Se exploran las distintas AOI de cada tipo y el número de ROIs totales.
+```{r}
+table(metadata$SegmentLabel) #Iba1:259, Sox2:223 
+length(unique(metadata$ROILabel)) #103
+```
+
+Las AOI de `metadata` se dividen en `r table(metadata$SegmentLabel)[1]` Iba1 y `r table(metadata$SegmentLabel)[2]` Sox2. 
+
+Se concluye que el experimento no agrega las `r table(annotation_AOI$Aoi)[1]` de tipo GFAP que se encuentran en `annotation_AOI`. Se reducen también el número total de ROIs a `r length(unique(metadata$ROILabel))`. 
+
+Se obtiene un AOI más de tipo Iba1 en comparación con el resultado obtenido en `annotation_AOI`.
+
+Se crea una tabla de los `metadata` para tener un conocimiento de la información que recoge.
+```{r}
+metadata <- metadata %>% mutate(across(where(is.character),as.factor))
+library(DT)
+
+datatable(
+  metadata,
+  extensions = "Scroller",
+  options = list(
+    deferRender = TRUE,
+    scrollX = TRUE,
+    scrollY = 500,
+    scroller = TRUE,
+    pageLength = 10
+  ),
+  class = "compact stripe"
+)
+
+```
+
+Para empezar con el análisis se añaden las variables faltantes de `metadata` al objeto `datos`, al igual que se eliminan las AOI de GFAP del objeto `datos`.
+```{r}
+datos_con_GFAP <- datos
+
+anno_AOI_filtrado <- annotation_AOI %>%
+  filter(Segment %in% c("Sox2", "Iba1"))
+
+selected_cols <- rownames(anno_AOI_filtrado)
+
+datos <- datos_con_GFAP[, selected_cols]  
+
+dim(datos)
+```
+
+Se obtienen `r dim(datos) [2]` AOI en `datos`. 
+
+Se crea una columna que será la que se comparará entre los objetos `datos` y `metadata`. 
+
+(Recordatorio: el objeto `annotation_AOI` sale de `pData(datos)`).
+```{r}
+pData(datos)$unique_ID <- paste(
+  pData(datos)$`Slide Name`,
+  pData(datos)$Roi,
+  pData(datos)$Segment,
+  sep = "_"
+)
+
+anno_AOI_filtrado <- pData(datos)
+```
+
+Se enfrenta `metadata$unique_ID` y `pData(datos)$unique_ID` para obtener la AOI sobrante.
+```{r}
+extra_AOI <- setdiff(metadata$unique_ID, pData(datos)$unique_ID)
+extra_AOI
+```
+
+Se elimina esta AOI de `metadata`.
+```{r}
+metadata <- metadata %>%
+  filter(!unique_ID %in% extra_AOI)
+dim(metadata)
+```
+
+Se juntan `pData(datos)` y `metadata`.
+
+Es importante quedarse con la nomenclatura de las AOI de las filas de `pData(datos)`, ya que se corresponden con el mismo nombre que tienen las columnas de los conteos `exprs(datos)`.
+```{r}
+anno_AOI_filtrado <- anno_AOI_filtrado %>%
+  rownames_to_column(var = "AOI_name")
+
+Annotation_AOI_completo <- anno_AOI_filtrado %>%
+  left_join(metadata, by = "unique_ID")
+
+rownames(Annotation_AOI_completo) <- Annotation_AOI_completo$AOI_name
+Annotation_AOI_completo$AOI_name <- NULL
+
+#verificación
+all.equal(rownames(Annotation_AOI_completo), colnames(exprs(datos)))
+
+pData(datos) <- Annotation_AOI_completo
+
+dim(pData(datos))
+```
+
+Se grafican las réplicas de cada anotación para comprobar que se obtiene un mínimo de entre 3-5 réplicas para cada grupo.
+
+`Grupo = SegmentLabel + trial_setting + tumor_setting`
+```{r}
+
+pData(datos)$Grupo_gmx <- paste(pData(datos)$SegmentLabel, pData(datos)$trial_setting, pData(datos)$tumor_setting, sep = "_")
+
+replicas_por_grupo <- pData(datos) %>%
+  as.data.frame() %>%
+  count(Grupo_gmx, name = "n_AOIs") %>%
+  arrange(n_AOIs)
+
+replicas_por_grupo %>%
+  ggplot(aes(x = reorder(Grupo_gmx, n_AOIs), y = n_AOIs)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  geom_hline(yintercept = 3, linetype = "dashed", color = "red") +
+  theme_bw() +
+  labs(
+    x = "Anotación biológica",
+    y = "Número de AOIs",
+    title = "Número de réplicas (AOIs) por anotación"
+  )
+```
+
+Finalmente, se obtienen `r dim(pData(datos)) [1]` AOI y `r dim(pData(datos)) [2]` variables para empezar el análisis.
+
+En este punto del pipeline se van a utilizar mayoritariamente funciones de StandR. Por este motivo es necesario cambiar la clase de `datos` de un objeto `NanostringGeoMxSet` a un objeto `SpatialExperiment` para poder aplicarle las funciones pertinentes.
+
+Para esta conversión, lo único que hay que tener en cuenta es que `SpatialExperiment` se construye en "Target Level" y no en "Probe level" que es como lo construye `NanostringGeoMxSet`. Lo que significa que en la matriz de conteos aparecen genes únicos y no sondas que pueden pertenecer al mismo gen. Se realiza la conversión de los `counts` antes de pasarlo a un objeto `SpatialExperiment`. 
+
+La clase `SpatialExperiment` tiene sus propias funciones para acceder a cada parte del objeto, en la tabla siguiente se resume la conversión de las funciones más destacadas. 
+
+  - Conteos: `NanostringGeoMxSet`-> `exprs()`, `SpatialExperiment`-> `assays()`. 
+  - Anotaciones AOI: `NanostringGeoMxSet`-> `pData()`, `SpatialExperiment`-> `colData()`.
+  - Anotaciones genes: `NanostringGeoMxSet`-> `fData()`, `SpatialExperiment`-> `rowData()`. 
+```{r}
+datos_probes <- datos
+datos <- aggregateCounts(datos_probes)
+
+datos_spe <- SpatialExperiment(
+  assays = list(counts = exprs(datos)),
+  rowData = fData(datos),
+  colData = pData(datos),
+)
+```
+
+Se añade `logCPM`(logCountsPerMilion) como `logcounts`en `datos`, una métrica calculada a partir de `counts` necesaria para pasos posteriores.
+
+Es una métrica básica para normalizar por la profundidad de lectura y transformar con logaritmos para estabilizar la varianza.
+```{r}
+logcpm <- cpm(assay(datos_spe, "counts"), log = TRUE, prior.count = 1)
+assay(datos_spe, "logcounts") <- logcpm
+
+assayNames(datos_spe)
+```
+
+### 2.3.1 Diagrama de Sankey
+
+Para la comprensión de la relación entre la matriz de conteos (counts por ROI) con cada muestra, se realiza un diagrama de Sankey. Este realiza la asociación entre la muestra, los pacientes, la clase (tratamiento o control), y el tipo celular (células tumorales (SOX2+) o TAM (IBA1+)).
+
+Ejemplo 1 (GeomxTools):
+```{r, warning=FALSE, message=FALSE}
+
+library(dplyr)
+library(ggforce)
+library(networkD3)
+library(htmlwidgets)
+
+sankeyCols <- c("source", "target", "value")
+
+link1 <- count(metadata, SlideName, trial_setting)
+link2 <- count(metadata, trial_setting, tumor_setting)
+link3 <- count(metadata, tumor_setting, SegmentLabel)
+
+colnames(link1) <- sankeyCols 
+colnames(link2) <- sankeyCols
+colnames(link3) <- sankeyCols
+
+links <- rbind(link1,link2, link3)
+nodes <- unique(data.frame(name=c(links$source, links$target)))
+
+# sankeyNetwork is 0 based, not 1 based
+links$source <- as.integer(match(links$source,nodes$name)-1)
+links$target <- as.integer(match(links$target,nodes$name)-1)
+
+sankey<- sankeyNetwork(Links = links, Nodes = nodes, Source = "source",
+              Target = "target", Value = "value", NodeID = "name",
+              units = "AOI", fontSize = 12, nodeWidth = 30)
+
+sankey
+
+htmlwidgets::saveWidget(sankey, "sankey.html", selfcontained = TRUE)
+```
+
+
+Ejemplo 2 (StandR):
+```{r}
+plotSampleInfo(datos_spe, column2plot = c("SlideName", "trial_setting", "tumor_setting","SegmentLabel"))
+```
+
+# 3. Control de calidad (QC) y filtrado
+
+El control de calidad en StandR se realiza a dos niveles: a nivel de gen y a nivel de ROI. 
+
+Antes de empezar con el QC se debe comprobar la columna `QCFlags` que se encuentra en las anotaciones de los AOI `colData(datos_spe)`. Esta variable indica las AOI de mala calidad según su paso preliminar del control de calidad y deben ser eliminadas. 
+
+Si los datos superan correctamente su QC habrá valores NA o celdas vacías en esta columna.
+```{r}
+anyNA(colData(datos_spe)$QCFlags)#[1] TRUE
+
+sum(is.na(colData(datos_spe)$QCFlags))#[1] 342
+sum(!is.na(colData(datos_spe)$QCFlags))#[1] 139
+
+qc_table <- as.data.frame(table(colData(datos_spe)$QCFlags))
+names(qc_table) <- c("QC Flag", "Frecuencia")
+kable(qc_table, caption = "Distribución de las banderas de control de calidad (QC)")
+
+```
+
+Se obtienen `r sum(is.na(colData(datos_spe)$QCFlags))` valores NA, que han superado el estándar de calidad.
+
+Se obtienen `r sum(!is.na(colData(datos_spe)$QCFlags))` con avisos.
+
+La tabla indica qué clases de `QCFlags` existen y cuantas hay de cada clase.
+
+Se filtran las AOIs con `QCFlags` que tengan valores diferentes a NA.
+```{r}
+datos_spe <- datos_spe[, is.na(colData(datos_spe)$QCFlags)]
+dim(datos_spe) # 18677   342
+```
+
+Se empieza el QC con `r nrow(datos_spe)` genes y `r ncol(datos_spe)` AOI.
+
+## 3.1 Gen QC
+
+El control de calidad a nivel de gen tiene como objetivo eliminar aquellos genes que no se expresan en más del 90% de los AOI y detectar genes con expresión muy baja, menos de 5 counts. Es una forma de revisar la calidad de cada fila de la matriz de conteos. 
+
+Se calcula el umbral mínimo de expresión, expresado en logCPM, que refleja el mínimo de counts esperado (5 en este caso) teniendo en cuenta la profundidad de las librerías. Luego, se filtran los genes que no alcanzan el `min_count` en más del 90% de las AOIs.
+
+La función utilizada es addPerROI con los parámetros `rm_genes = TRUE` (remove_genes), `min_count = 5` y `sample_fraction = 0.9`.
+
+```{r}
+datos_pre_QC <- datos_spe
+datos_spe <- addPerROIQC(datos_pre_QC, rm_genes = TRUE)
+names(metadata(datos_spe))
+```
+
+Se generan tres archivos en el objeto `datos_spe` a los cuales se accede mediante la función `metadata()`:
+
+  - `lcpm_threshold` contiene el umbral.
+  
+  - `genes_rm_rawCount` contiene los conteos crudos de los genes eliminados.
+  
+  - `genes_rm_logCPM` contiene los logcounts de los genes eliminados. 
+```{r}
+metadata <- metadata(datos_spe)
+rownames(metadata$genes_rm_logCPM)
+```
+
+Se eliminan `r nrow(metadata$genes_rm_logCPM)` genes que son `r rownames(metadata$genes_rm_logCPM)`.
+
+Con la función `plotGeneQC()` se evaluan las expresiones en logCPM de los genes que fueron eliminados en las distintas AOIs. 
+
+La función también incluye un histograma que muestra la distribución del porcentaje de genes no expresados en todas las AOIs. Es decir, se calcula para cada AOI el porcentaje de genes que no se expresan (counts=0) y se hace un histograma de estos porcentajes. 
+```{r}
+plotGeneQC(datos_spe, ordannots = "Segment", col = Segment, point_size = 2)
+```
+
+Se obtienen dos gráficos, el primero muestra los genes eliminados, donde cada punto es la expresión de ese gen en un AOI (n=342). La mayoría de los puntos están por debajo del umbral de expresión (línea roja), lo que contribuye a que el gen sea eliminado. No se observa ninguna diferencia aparente entre los segmentos Iba1 y Sox2.
+
+El segundo muestra para todos los AOI el porcentaje de genes que no tienen expresión. Se observa como la mayoría de AOI se acumulan mayoritariamente entre el 0-0,2% indicando que la mayoría de genes se expresan en todos los AOIs.
+
+## 3.2 ROI QC
+
+El control de calidad a nivel de ROI, busca identificar ROIs con bajo tamaño de biblioteca y/o bajo recuento de células, ya que se consideran muestras de baja calidad por insuficiente profundidad de secuenciación o falta de ARN en la región seleccionada. Es una forma de analizar la calidad de las columnas de la matriz de conteos. Como en este experimento se han recogido los conteos por AOI, se realiza el control de calidad de las AOI.
+
+Se evalúa el gráfico de distribución del tamaño de la librería frente al número de núcleos. Al observar el diagrama de dispersión, se espera que los tamaños de librería estén correlacionados de forma positiva con el número de células (es decir, con el recuento de núcleos).
+
+Para filtrar muestras de baja calidad, se define un umbral mínimo de recuento de células, para este experimento 150 células. Además, se puede investigar si los AOI de baja calidad provienen de alguna muestra específica, estratificando los puntos por nombre de lámina (slideName).
+```{r}
+plotROIQC(datos_spe, x_threshold = 150, color = SlideName)
+```
+
+No resulta inesperado que existan algunos AOIs con un tamaño de librería relativamente bajo pero con un número razonable de células (recuento de núcleos).
+
+En este dataset, la relación entre tamaño de biblioteca y recuento de células es relativamente estable, sin anomalías evidentes, exceptuando una pequeña desviación al inicio de la recta. Esto indica que los valores observados son más altos de lo esperado en librerías con bajo número de recuento de células.
+
+La línea roja marca el umbral de recuento mínimo de células = 150. No se observa ninguna asociación entre AOIs de baja calidad y una muestra en específico.
+
+Eliminamos las AOI que no superan el número mínimo de células.
+```{r}
+qc <- colData(datos_spe)$AOINucleiCount > 150
+table(qc) #FALSE  TRUE 
+            #20   322 
+datos_spe <- datos_spe[,qc]
+dim(datos_spe)
+```
+
+Se han eliminado `r table(qc)[1]` AOI.
+
+Se pueden cambiar los ejes x o y de la función `plotROIQC`para cualquier otro estadístico que se desee evaluar, usando los parámetros x_axis o y_axis.
+
+Por ejemplo, se puede graficar el tamaño del área frente al tamaño de la biblioteca.
+```{r}
+plotROIQC(datos_spe,  x_axis = "AOISurfaceArea", x_lab = "AreaSize", y_axis = "lib_size", y_lab = "Library size", col = SlideName)
+```
+
+Se observa la presencia de un outlier, un punto que se encuentra en SaraWTATMA5 con un tamaño de librería entre 100.000-125.000 mm2. Se procede a eliminarlo.
+```{r}
+outlier <- colData(datos_spe)$AOISurfaceArea >100000
+datos_spe_outlier <- datos_spe
+datos_spe <- datos_spe_outlier[, !outlier]
+dim(datos_spe)
+```
+
+Se realiza el mismo gráfico sin el outlier.
+```{r}
+plotROIQC(datos_spe,  x_axis = "AOISurfaceArea", x_lab = "AreaSize", y_axis = "lib_size", y_lab = "Library size", col = SlideName)
+```
+
+La eliminación del outlier proporciona una relación entre el tamaño de librería y el tamaño del área de las AOI mucho más estable. Se observa claramente una relación positiva entre estos parámetros, indicando que a mayor tamaño de área de las AOI, mayor es la librería.
+
+## 3.3 Expresión Logarítmica Relativa (RLE)
+
+Tras el filtrado, se emplea la función `plotRLExpr` para visualizar la Expresión Logarítmica Relativa (RLE) de los datos, con el objetivo de identificar posibles variaciones técnicas presentes en el conjunto de datos.
+
+Para cada gen se calcula su mediana de expresión en todas las AOI. Luego se resta este valor a la expresión del gen de cada muestra.
+
+Para cada gen:
+
+***RLE = log(expr_AOI) − mediana(log(expr_todas_las_AOI))***
+
+Es decir, el RLE indica cuánto se desvía la expresión de un gen en una AOI respecto al valor típico de ese gen. Para ello, se analiza la distancia relativa entre la mediana del RLE de cada AOI (representada por el punto en el boxplot) y el valor $0$.
+
+Por defecto, se representa el RLE de los datos crudos, donde se espera que la mayor parte de la variación observada esté causada por diferencias en el tamaño de la librería. Por lo tanto, el hecho de normalizar los datos solucionaría este problema.
+```{r}
+plotRLExpr(datos_spe)
+```
+
+Se puede observar que la mayoría de las AOI están centradas en la línea roja ($y=0$), aunque también se observan algunas desplazadas hacia arriba o con bigotes muy largos. 
+
+Si se realiza el RLE con los conteos logcounts, se encuentran en `assay=2`, (recordatorio: logcounts es la transformación de counts a logCPM), se observa como las variaciones técnicas debidas al tamaño de librería son prácticamente eliminadas.
+```{r}
+plotRLExpr(datos_spe, assay = 2)
+```
+
+Existe la posibilidad de estratificar por anotaciones del metadata, como por ejemplo `ordannots = SlideName` o `SegmentLabel`, para identificar posibles factores que contribuyen a las variaciones técnicas observadas.
+```{r}
+plotRLExpr(datos_spe, ordannots = "SlideName", assay = 2, color = SlideName)
+plotRLExpr(datos_spe, ordannots = "SegmentLabel", assay = 2, color = SegmentLabel)
+```
+
+No se encuentran grandes diferencias aparentemente entre los dos grupos de `SegmentLabel` ni entre las muestras `SlideName`.
+
+## 3.4 Reducción de dimensionalidad
+
+### 3.4.1 Análisis de Componentes Principales (PCA) 
+
+El PCA es un método de reducción de la dimensionalidad utilizado para transformar conjuntos de datos de alta dimensionalidad a dos dimensiones, sin perder la información más relevante. Ayuda a identificar agrupamientos (clústeres) de muestras con perfiles biológicos parecidos y a visualizar posibles variaciones técnicas.
+
+Se realiza el PCA estratificando por `SlideName` para evaluar si hay efecto de lote.
+```{r}
+library(scater)
+set.seed(100)
+datos_spe <- scater::runPCA(datos_spe)
+pca_results <- reducedDim(datos_spe, "PCA")
+drawPCA(datos_spe, precomputed = pca_results, col = SlideName)
+```
+
+El primer componente (horizontal) explica el 38.07% de la variación de los datos, mientras que el segundo (vertical) el 8.57%. Esta reducción a dos dimensiones explica el 46.64% de la variabilidad de los datos.
+
+Por lo que se puede observar, no hay una agrupación clara de los datos según el nombre de muestra, ya que no forman grupos aislados por color. La mayor diferencia (PC1) parece ser de origen biológico o de otro factor técnico que no es el `SlideName`, ya que se intuyen dos grupos en el eje horizontal.
+
+Se estratifica por el tipo de marcador (Iba1 o Sox2) y la clase (Nivolumab o control).
+```{r}
+drawPCA(datos_spe, precomputed = pca_results, color = SegmentLabel, shape = trial_setting)
+```
+
+El análisis de componentes principales (PCA) revela que la principal fuente de variación en los datos (PC1: 38.07%) está impulsada por el tipo de segmento (Iba1 vs Sox2). No se observa una separación clara basada en el tratamiento (Nivolumab vs Control) a nivel global, ni un efecto de lote significativo por portaobjetos (SlideName), lo cual valida la consistencia biológica de las muestras.
+
+Otras funciones del paquete standR para la visualización de los PCAs.
+```{r}
+plotScreePCA(datos_spe, precomputed = pca_results)
+plotPairPCA(datos_spe, col = SegmentLabel, precomputed = pca_results, n_dimension = 4)
+plotPairPCA(datos_spe, col = SlideName, precomputed = pca_results, n_dimension = 4)
+plotPCAbiplot(datos_spe, n_loadings = 10, precomputed = pca_results, col = SegmentLabel)
+```
+
+### 3.4.2 Multidimensional Scaling (MDS)
+
+Otra forma de reducir dimensionalidad es mediante el MDS.
+```{r}
+standR::plotMDS(datos_spe,
+  dims = c(1, 2),
+  precomputed = NULL,
+  textScale = 1,
+  assay = 1,
+  color = SegmentLabel)
+```
+
+Se explica una mayor variabilidad de los datos del 60.56% en estas dos dimensiones, aunque la separación entre los tipos de segmento Iba1 y Sox2 es menos clara que cuando se usa PCA.
+
+### 3.4.3 Uniform Manifold Approximation and Projection (UMAP)
+
+Otro método de reducción de la dimensionalidad es mediante UMAP.
+```{r}
+set.seed(100)
+
+datos_spe <- scater::runUMAP(datos_spe, dimred = "PCA")
+
+plotDR(datos_spe, dimred = "UMAP", col = SegmentLabel)
+plotDR(datos_spe, dimred = "UMAP", col = SlideName)
+```
+
+Se corrobora que la presencia de variabilidad aportada por el efecto de lote es mínima y que la separación entre grupos es debida a las dos poblaciones Iba1 y Sox2.
+
+# 4. Normalización
+
+Si se identifican variaciones técnicas en los pasos de QC, como las observadas en el RLE de los datos crudos, antes de realizar cualquier análisis posterior es necesario normalizar los datos para corregir o minimizar dichas variaciones.
+
+El paquete standR ofrece varias opciones de normalización: TMM, RPKM, TPM, CPM, upperquartile y sizefactor.
+
+Se realiza la normalización por el método TMM mediante la función `geomxNorm().` Esta función normaliza los `counts` de `datos_spe`, y almacena la matriz normalizada en un nuevo `assay` bajo el nombre de `logcounts`. 
+
+De esta forma, se obtiene en `datos_spe` y `datos_tmm`, la misma matriz `counts` y matrices distintas en `logcounts`, ya que en `datos_spe`, `logcounts = logCPM`, en cambio, en `datos_tmm`, `logcounts= datos normalizados por TMM`.
+
+```{r}
+datos_tmm <- geomxNorm(datos_spe, method = "TMM")
+assayNames(datos_tmm)
+```
+
+Para evaluar si la normalización eliminó las variaciones no deseadas, se utilizan los gráficos RLE y PCA.
+```{r}
+library(patchwork)
+
+p1 <- plotRLExpr(datos_tmm, ordannots = "SlideName", assay = 1, color = SlideName) + ggtitle ("RAW")
+p2 <- plotRLExpr(datos_tmm, ordannots = "SlideName", assay =2, color = SlideName) + ggtitle("TMM")
+
+p1 
+p2
+```
+
+Se observa como la normalización aporta una gran mejora acercando las medianas de las AOI a 0, sugiriendo que la eliminación de las variaciones técnicas.
+```{r}
+set.seed(100)
+
+datos_tmm <- scater::runPCA(datos_tmm, exprs_values = "logcounts")
+
+pca_results_tmm <- reducedDim(datos_tmm, "PCA")
+
+plotPairPCA(datos_tmm, precomputed = pca_results_tmm, color = SegmentLabel)
+plotPairPCA(datos_tmm, precomputed = pca_results_tmm, color = SlideName)
+```
+
+El PC1 (37.09%) sigue siendo el eje principal de variación y separa casi perfectamente los dos grupos biológicos (Iba1 y Sox2). Aunque el porcentaje de varianza del PC1 baja ligeramente (de 38.07% a 37.09%), se ha eliminado parte del "ruido técnico" que previamente inflaba artificialmente la varianza. Si se compara la distribución por `SlideName`, los colores de los diferentes portaobjetos están completamente mezclados entre sí. Esto confirma que la normalización TMM ha eliminado con éxito el efecto de lote.
+
+# 5. Corrección del efecto lote
+
+Cada lámina generalmente solo puede contener unos pocos segmentos de tejido, por lo que es común que los datos de GeoMx DSP estén afectados por el efecto de lote introducido por las diferentes láminas. 
+
+En los pasos previos a la corrección del efecto lote, se ha encontrado una presencia de efecto de lote mínima en este dataset. Igualmente, es recomendable realizar la corrección del efecto lote, para augmentar el poder estadístico, para minimizar los falsos positivos (que un gen aparezca como significativo cuando en verdad no lo es ) y porque se considera una buena praxis demostrando robusted en el análisis.
+
+El paquete standR ofrece dos enfoques para corregir efectos de lote: RUV4 y Limma.
+
+## 5.1 RUV4
+
+La función findNCGs permite identificar los NCGs (Negative Control Genes) de los datos. En este caso, el efecto de lote se debe principalmente a las láminas, así que se busca identificar NCGs a través de todas las láminas.
+
+Para ello, el parámetro batch_name se establece en “SlideName” y se seleccionan los 300 genes menos variables de las distintas láminas como NCGs (ordenados por coeficiente de variación). Se hace esta selección de genes estables para tener una referencia neutra, así cualquier variación observada en los demás genes reflejará principalmenteuna duda diferencias biológicas y no efectos de lote. 
+
+Estos genes se almacenan en el `metadata(datos_spe)` como una columna nueva bajo el nombre “NCGs”.
+
+La función `findNCG()` utiliza por defecto el `assay = 2 = logcounts` de los datos introducidos.
+```{r}
+datos_spe <- findNCGs(datos_spe, batch_name = "SlideName", top_n = 300)
+metadata(datos_spe) |> names()
+```
+
+Una de las principales dudas a la hora de aplicar la corrección del efecto lote del pipeline StandR, es el por qué se aplica a los `logcounts` de `datos_spe` y no a los `logcounts` de `datos_tmm`. 
+
+Por este motivo se realiza también la corrección del efecto lote en los datos normalizados.
+```{r}
+datos_tmm <- findNCGs(datos_tmm, batch_name = "SlideName", top_n = 300)
+metadata(datos_tmm) |> names()
+    
+```
+
+Para la corrección con RUV4, la función requiere 3 parámetros adicionales además del objeto de entrada:
+
+  - `factors`: el factor de interés, es decir, la variación biológica que se desea conservar.
+
+  - `NCGs`: la lista de genes de control negativo identificados con la función findNCGs.
+
+  - `k`: el número de factores no deseados a utilizar. Según la documentación de RUV, se recomienda usar el $k$ más pequeño posible que elimine la variación técnica observada.
+  
+La función `geomBatchCorrection()` también utiliza por defecto el `assay = 2 = logcounts`
+
+Se inspecciona sobre qué $k$ es la mejor para este análisis. El valor óptimo de $k$ será el valor más pequeño que logre producir una separación de la biología principal de interés del experimento en un gráfico de PCA.
+```{r}
+for(i in seq(5)){
+  datos_ruv <- geomxBatchCorrection(datos_spe, factors = "SegmentLabel", 
+                   NCGs = metadata(datos_spe)$NCGs, k = i)
+  
+  print(plotPairPCA(datos_ruv, assay = 2, n_dimension = 4, color = SegmentLabel, title = paste0("k = ", i)))
+  
+}
+```
+
+Se elije $k=2$ como mejor resultado.
+```{r}
+datos_ruv <- geomxBatchCorrection(datos_spe, factors = "SegmentLabel",
+NCGs = metadata(datos_spe)$NCGs, k = 2)
+
+set.seed(100)
+
+datos_ruv <- scater::runPCA(datos_ruv)
+
+pca_results_ruv <- reducedDim(datos_ruv, "PCA")
+
+plotPairPCA(datos_ruv, precomputed = pca_results_ruv, color = SegmentLabel, title = "RUV4, k = 2", n_dimension = 4)
+
+plotPairPCA(datos_ruv, precomputed = pca_results_ruv, color = SlideName, title = "RUV4, k = 2", n_dimension = 4)
+
+drawPCA(datos_ruv, precomputed = pca_results_ruv, col = SlideName)
+
+```
+
+Se observa que se ha producido la eliminación del efecto de lote, porque no se puede intuir ninguna agrupación en el PCA estratificado por `SlideName`.
+
+Se repite la misma labor para los datos normalizados.
+```{r}
+for(i in seq(5)){
+  datos_ruv_norm <- geomxBatchCorrection(datos_tmm, factors = "SegmentLabel", 
+                   NCGs = metadata(datos_tmm)$NCGs, k = i)
+  
+  print(plotPairPCA(datos_ruv_norm, assay = 2, n_dimension = 4, color = SegmentLabel, title = paste0("k = ", i)))
+  
+}
+```
+
+Se elije $k=2$ como valor óptimo.
+```{r}
+datos_ruv_norm <- geomxBatchCorrection(datos_tmm, factors = "SegmentLabel",
+NCGs = metadata(datos_tmm)$NCGs, k = 2)
+
+set.seed(100)
+
+datos_ruv_norm <- scater::runPCA(datos_ruv_norm)
+
+pca_results_ruv_norm <- reducedDim(datos_ruv_norm, "PCA")
+
+plotPairPCA(datos_ruv_norm, precomputed = pca_results_ruv_norm, color = SegmentLabel, title = "RUV4, k = 2", n_dimension = 4)
+
+plotPairPCA(datos_ruv_norm, precomputed = pca_results_ruv_norm, color = SlideName, title = "RUV4, k = 2", n_dimension = 4)
+
+drawPCA(datos_ruv_norm, precomputed = pca_results_ruv_norm, col = SlideName)
+```
+
+Los PCAs de los datos normalizados muestran una reducción del ruido técnico, logrando una integración de los diferentes portaobjetos `SlideName`. Se obtiene una subida de la explicación del PC2 a 11.19%, sugiriendo que existen diferencias secundarias dentro de cada tipo celular.
+
+Comparando los PCAs de las primeras dos dimensiones de los `logcounts` de los datos crudos y normalizados, se percibe una corrección más limpia del efecto de lote en los datos crudos `datos_spe`, ya que se observa una mejor dispersión de los datos según su `slideName`.
+
+## 5.2 Limma
+
+La segunda opción en el pipeline StandR para la eliminación del ruido de fondo es el paquete Limma. Esta función requiere 2 parámetros adicionales además del objeto de entrada.
+
+  - `batch`: un vector que indica la información de lote de todas las muestras.
+
+  - `design`: una matriz de diseño generada a partir de `model.matrix`.
+```{r}
+datos_lrb <- geomxBatchCorrection(datos_spe,
+                       batch = colData(datos_spe)$SlideName, method = "Limma",
+                       design = model.matrix(~SegmentLabel, data = colData(datos_spe)))
+```
+
+Nuevamente se utilizan gráficos de QC, como el PCA, para inspeccionar y evaluar la efectividad del proceso de corrección de efectos de lote aplicado.
+```{r}
+plotPairPCA(datos_lrb, assay = 2, color = SegmentLabel, title = "Limma remove Batch")
+plotPairPCA(datos_lrb, assay = 2, color = SlideName, title = "Limma remove Batch")
+drawPCA(datos_lrb, assay = 2, color =SlideName, title = "Limma remove Batch")
+```
+
+Se visualiza la corrección del efecto lote, ya que se observan los puntos de las distintas muestras aleatoriamente repartidos y sin ningún patrón de agrupación.
+
+Se realiza, al igual que con RUV4, el análisis con los datos normalizados.
+```{r}
+datos_lrb_norm <- geomxBatchCorrection(datos_tmm,
+                       batch = colData(datos_tmm)$SlideName, method = "Limma", n_assay = 2,
+                       design = model.matrix(~SegmentLabel, data = colData(datos_tmm)))
+
+plotPairPCA(datos_lrb_norm, assay = 2, color = SegmentLabel, title = "Limma remove Batch Norm TMM Data")
+plotPairPCA(datos_lrb_norm, assay = 2, color = SlideName, title = "Limma remove Batch Norm TMM Data")
+drawPCA(datos_lrb_norm, assay = 2, color =SlideName, title = "Limma remove Batch Norm TMM Data")
+```
+
+Se observa en estos últimos gráficos, una separación menos nítida estratificando por `SegmentLabel`en comparación con los datos no normalizados, cuando se aplica la corrección del efecto lote con Limma. Esto no significa la obtención de peores resultados, sino que indica que la separación observada en los `logcounts`de `datos_spe` estaba parcialmente inflada. Tras la corrección se obtiene una visión más fiel y conservadora de la verdadera variabilidad biológica entre los segmentos.
+
+Se recomienda utilizar estadísticas resumidas para evaluar la efectividad de la corrección por lote y elegir qué método (RUV4 o Limma) ha sido más efectivo para este dataset.
+
+Las 6 estadísticas resumidas incluidas en el paquete son conocidas como Métricas de Evaluación de Clústeres:
+
+  - Adjusted Rand Index (ARI): Mide la concordancia entre los clústeres del PCA y las etiquetas reales (SegmentLabel), ajustando el valor por el azar (donde 1 es una coincidencia perfecta).
+
+  - Coeficiente de similitud de Jaccard: Evalúa qué tan similares son los conjuntos de muestras en cada clúster, calculando la proporción de coincidencias sobre el total de elementos comparados.
+
+  - Coeficiente de Silhouette: Mide qué tan cerca está cada muestra de su propio grupo en comparación con otros grupos; valores altos indican una asignación de clúster clara y robusta.
+
+  - Coeficiente Chi-cuadrado: Evalúa la independencia estadística entre los clústeres obtenidos y las variables de lote o segmento, detectando si existe un sesgo sistemático.
+
+  - Distancia de Mirkin: Cuantifica la diferencia o "distancia" entre dos clasificaciones; a menor valor, mayor es la similitud entre el agrupamiento del PCA y la biología esperada.
+
+  - Coeficiente de solapamiento (Overlap Coefficient): Mide el grado de "intersección" entre los grupos, siendo muy útil para comprobar si las muestras de diferentes lotes se han integrado correctamente en un mismo espacio.
+
+Esta evaluación se realiza con la función `plotClusterEvalStats()`.
+
+Se presentan los resultados de las estadísticas resumidas para los dos métodos de corrección del efecto de lote utilizados en este pipeline (RUV4 y Limma), así como para los datos crudos y normalizados con TMM.
+
+En orden siguiente: datos_spe, datos_ruv, datos_lrb, datos_tmm, datos_ruv_norm, datos_lrb_norm.
+
+La puntuación de cada método se muestra en un gráfico de barras con las seis estadísticas resumidas, organizadas en dos secciones: biología y lote.
+
+Para los factores biológicos de interés definidos en la corrección por lote, es mejor un puntaje más alto en la corrección.
+
+Para los efectos de lote, un puntaje más bajo es preferible en la corrección.
+```{r}
+datos_list <- list(datos_spe, datos_ruv, datos_lrb, datos_tmm, datos_ruv_norm, datos_lrb_norm)
+
+plotClusterEvalStats(spe_list = datos_list,
+                     bio_feature_name = "SegmentLabel",
+                     batch_feature_name = "SlideName",
+                     data_names = c("Raw","RUV4","Limma", "Raw TMM", "RUV4 TMM", "Limma TMM"))
+```
+
+En este conjunto de datos, se identifica RUV4 en los datos sin normalizar, como la herramienta más potente para preservar el carácter biológico de las muestras y Limma en los datos normalizados, como la mejor herramienta para minimizar el ruido técnico. 
+
+Para finalizar, se pueden visualizar mediante gráficos RLE, los `logcounts` de `datos_ruv/lrb` y de `datos_ruv/lrb_norm` para determinar qué corrección por lote funciona mejor en este conjunto de datos.
+```{r}
+plotRLExpr(datos_ruv, assay = 2, color = SlideName) + ggtitle("RUV4")
+plotRLExpr(datos_lrb, assay = 2, color = SlideName) + ggtitle("Limma")
+plotRLExpr(datos_ruv_norm, assay = 2, color = SlideName) + ggtitle("RUV4")
+plotRLExpr(datos_lrb_norm, assay = 2, color = SlideName) + ggtitle("Limma")
+```
+
+Se observa un efecto similar ente ambos métodos, así que se puede usar indistintamente cualquiera de los dos para este conjunto de datos. 
+
+Al comparar los logcounts con los datos normalizados por TMM, se intuye una mayor centralidad de las cajas en los resultados normalizados. Esto nos indica que el hecho de normalizar comporta una mejoría a la hora de poder comparar muestras que se encuentran a diferente escala. 
+
+En este punto, elegir la metodología adecuada para la corrección, va a ser influido por el objetivo del experimento, diferenciando en si la prioridad es la precisión biológica (`datos_ruv`), o la integración perfecta de las muestras (`datos_lrb_norm`).
+
+Se elije el método RUV4 (`datos_ruv`) para continuar con los análisis, priorizando la precisión biológica.
+
+# 6. Análisis posteriores (downstream)
+
+Para los análisis posteriores, como los de expresión diferencial (DE), standR no proporciona funciones específicas.
+
+Se recomienda integrar el flujo de trabajo con pipelines establecidos, como edgeR, limma-voom o DESeq2, que utilizan modelos lineales y aprovechan la información de todos los genes, siendo más adecuados para datasets complejos con múltiples factores experimentales. 
+No se recomienda usar análisis simples como t-test para analizar datos de GeoMx DSP.
+
+En este pipeline, se desarrollará el análisis DE usando el pipeline limma-voom.
+
+Se ha demostrado previamente que, para este dataset, el uso de RUV con $k=2$ (`datos_ruv`) constituye la estrategia más equilibrada; corrigeeficazmente el efecto de lote y otras variaciones técnicas no deseadas sin comprometer la resolución de la estructura biológica de los datos.
+
+Sin embargo, los conteos normalizados no se deben usar directamente en modelos lineales. Para el modelado lineal es mejor incluir la matriz de pesos generada por la función `geomxBatchCorrection()` como covariable. Esta matriz de pesos se encuentra en el `colData()` del objeto.
+```{r}
+pesos_ruv <- colData(datos_ruv)[,seq(ncol(colData(datos_ruv))-1, ncol(colData(datos_ruv)))]
+head(pesos_ruv)
+```
+
+## 6.1 Establecimiento de una matriz de diseño y contrastes
+
+El objetivo del análisis posterior es comprender el carácter biológico de los datos que se están analizando. Para ello se define como objetivo evaluar si existe una diferencia significativa entre cómo se expresan las células cancerígenas (Sox2) y los macrófagos asociados a tumores (Iba1) en los pacientes control y tratados con neoadyuvante. 
+
+En teoría, si el tratamiento funciona y hay una activación de la resupuesta inmunitária, esto debería reflejarse en cambios de expresión génica en las distintas zonas celulares analizadas. Un ejemplo de este cambio de perfil de expresión podría ser:
+
+  - En células tumorales: aumento de genes de estrés, apoptosis, interferones.
+  
+  - En TAMs: activación de pro-inflamatoria (M1), desactivación de inmunosupresores, secreción de citoquinas y quimiocinas.
+
+También se desea analizar si existen diferencias significativas entre la eficacia del tratamiento en pacientes con tumores recurrentes o primarios. Los tumores primarios son potencialmente más susceptibles al tratamiento, mientras que los tumores recurrentes tienen un microambiente preparado para resistirlo. Por lo tanto, pueden existir diferencias en la activación de genes en los pacientes tratados con Nivolumab según si el tumor es primario o recurrente. 
+
+### 6.2.1 Análisis de Expresión Diferencial (DE) Iba1 vs Sox2
+
+Para iniciar el análisis se realiza un enfoque en la expresión diferencial inicial entre los segmentos Iba1 y Sox2, para observar que los perfiles transcriptómicos sean distintos, lo cual es esperado porque son tipos celulares diferentes.
+
+Se construye una matriz de diseño con la información de los subtipos de tejido.
+
+Se añaden las matrices W resultantes de RUV4 a la matriz de diseño como covariables para usar los datos corregidos por efecto de lote.
+```{r}
+dge <- SE2DGEList(datos_ruv)
+design1 <- model.matrix(~0 + SegmentLabel + ruv_W1 + ruv_W2, data = colData(datos_ruv))
+colnames(design1)
+```
+
+Se redefinen los nombres.
+```{r}
+colnames(design1) <- gsub("^SegmentLabel","",colnames(design1))
+colnames(design1)
+```
+
+Se construye la matriz de contraste para el análisis de Expresion Diferencial (DE) entre los segmentos.
+```{r}
+contr_matrix_segment <- makeContrasts(
+IvsS = Iba1 - Sox2,
+levels = colnames(design1)
+)
+
+```
+
+Se recomienda filtrar los genes con baja cobertura en el dataset para obtener una relación media-varianza más precisa y reducir el número de pruebas estadísticas.
+
+En este caso, se utiliza la función `filterByExpr` del paquete `edgeR` para filtrar los genes según la matriz de diseño, conservando la mayor cantidad posible de genes con conteos razonables.
+```{r}
+keep <- filterByExpr(dge,design1)
+table(keep)
+rownames(datos_spe)[!keep]
+dge_filtrado <- dge[keep, ]
+```
+
+Aparecen solo `r table(keep)[1]` genes de baja cobertura, que son `r rownames(datos)[!keep]`. 
+Se eliminan.
+
+### 6.2.2 Comprovación del Coeficiente de Variación Biológico (BCV)
+
+El Coeficiente de Variación Biológico (BCV) es un indicador de la variabilidad biológica entre replicados o muestras biológicas. Refleja cómo cambia la abundancia real (desconocida) de un gen entre muestras replicadas de ARN.
+
+En el gráfico de BCV de un dataset de GeoMx hay tres aspectos principales a observar:
+
+  - Tendencia de dispersión: Se espera que la dispersión se aplane en los genes con mayor conteo.
+
+  - Tendencia común: Debe ser relativamente pequeña. En RNA-seq, se espera entre 0.2 y 0.4 en muestras humanas y entre 0.05 y 0.2 en ratón y líneas celulares. En GeoMx, al muestrear segmentos de tejido humano, se espera que sea menor que en RNA-seq humano.
+
+  - Genes con bajo conteo y alto BCV: Hay que tener cuidado si aparecen genes con alto BCV y bajo conteo. A la vez es una buena praxis revisar los genes con alto BCV  con  especialistas, ya que probablemente se identifiquen como genes diferencialmente expresados (DE) y puedan estar influyendo en la variación observada en los gráficos PCA. 
+
+Se genera el gráfico de BCV para la comparación entre los segmentos Iba1 y Sox2.
+```{r}
+dge_segment <- estimateDisp(dge_filtrado, design = design1, robust = TRUE)
+
+plotBCV(dge_segment, legend.position = "topleft", ylim = c(0, 1.3))
+bcv_df <- data.frame(
+  'BCV' = sqrt(dge_segment$tagwise.dispersion),
+  'AveLogCPM' = dge_segment$AveLogCPM,
+  'gene_id' = rownames(dge_segment)
+)
+
+highbcv <- bcv_df$BCV > 0.8
+highbcv_df <- bcv_df[highbcv, ]
+points(highbcv_df$AveLogCPM, highbcv_df$BCV, col = "red")
+text(highbcv_df$AveLogCPM, highbcv_df$BCV, labels = highbcv_df$gene_id, pos = 4)
+```
+
+La línea de tendencia de dispersión (azul) se acaba aplanando en los genes con mayores conteos.
+La línea de tendencia común (roja) está por debajo del rango humano de RNA-seq (0,2-0,4).
+No aparecen genes con alto BCV y bajo número de counts.
+
+Los genes como GFAP, SPP1, CHI3L1 o PDPN tienen un coeficiente de variación biológico alto, lo que implica que su expresión varía mucho entre los segmentos celulares.
+
+### 6.2.3 Análisis de Expresión Diferencial (DE) con el pipeline limma-voom
+
+En el pipeline de análisis limma-voom, el modelado lineal se realiza sobre los valores log-CPM utilizando las funciones voom, lmFit, contrasts.fit y eBayes.
+
+El método voom (de limma) estima cómo cambia la variabilidad de los genes dependiendo de su expresión.
+La línea roja debería suavizar la nube de puntos. Eso significa que voom estimó bien la relación media–varianza.
+```{r}
+v1 <- voom(dge_segment, design1, plot = TRUE)
+```
+
+Cada punto negro es un gen.
+
+En el eje X está el log2 del tamaño de los conteos+0,5.
+
+En el eje Y está la desviación estándar estimada para cada gen.
+
+La línea roja es la tendencia media-variancia ajustada.
+
+Se obtiene una especie de U, donde a la izquierda se acumulan los genes poco expresados, en el centro hay una nube de puntos donde se encuentran los genes con expresión media (log2(count+0,5)=5/6) y a la derecha parecen genes muy expresados. Este gráfico sirve para poder evaluar si voom detecta una relación media-varianza clara. Si la línea roja sigue claramente la nube de puntos, voom está capturando bien la relación media–varianza y el modelo está bien ajustado. 
+Con el resultado obtenido, se puede afirmar que el modelo estimó bien a relación media-varianza.
+
+Se prosigue al ajuste del modelo con limma, donde `lmFit()` ajusta el modelo, `contraste.fit()` define comparaciones y `eBayes` aporta robustez en el cálculo estadístico.
+```{r}
+fit1 <- lmFit(v1) 
+
+fit_contrast1 <- contrasts.fit(fit1, contrasts = contr_matrix_segment) 
+
+efit1 <- eBayes(fit_contrast1, robust = TRUE)
+```
+
+Se mide qué genes son estadísticamente significativos.
+```{r}
+results_efit1<- decideTests(efit1, p.value = 0.05)
+summary_efit1 <- summary(results_efit1)
+
+summary_efit1
+
+```
+
+Iba1 vs Sox2: 
+
+ - Down: Genes con mayor expresión en Sox2	`r summary_efit1[1]`.
+ - NotSig:	Genes con expresión similar en ambos segmentos `r summary_efit1[2]`.
+ - Up:	Genes con mayor expresión en Iba1	`r summary_efit1[3]`.
+
+### 6.2.4 Visualización
+
+Mediante `TopTable()` se obtienen los genes significativos ordenados por `pValue` del análisis de Expresión Diferencial.
+```{r}
+DE_results_IvS <- topTable(efit1, coef = 1, sort.by = "P", n = Inf)
+DE_genes_toptable_IvS <- topTable(efit1, coef = 1, sort.by = "P", n = Inf, p.value = 0.05)
+```
+
+Se grafica con con un MA.
+```{r}
+DE_results_IvS %>% 
+  mutate(DE = ifelse(logFC > 0 & adj.P.Val <0.05, "UP", 
+                       ifelse(logFC <0 & adj.P.Val<0.05, "DOWN", "NOT DE"))) %>%
+  ggplot(aes(AveExpr, logFC, col = DE)) + 
+  geom_point(shape = 1, size = 1) + 
+  geom_text_repel(data = DE_genes_toptable_IvS %>% 
+                    mutate(DE = ifelse(logFC > 0 & adj.P.Val <0.05, "UP", 
+                       ifelse(logFC <0 & adj.P.Val<0.05, "DOWN", "NOT DE"))) %>%
+                    rownames_to_column(), aes(label = rowname), max.overlaps = 20) +
+  theme_bw() +
+  xlab("Average log-expression") +
+  ylab("Log-fold-change") +
+  ggtitle("Iba1 vs. Sox2 (limma-voom)") +
+  scale_color_manual(values = c("blue","gray","red")) +
+  theme(text = element_text(size=15))
+```
+
+La matriz de contraste se calculó como `Contr.matrix= Iba1 - Sox2`, así que se obtiene en rojo los genes sobreexpresados en áreas Iba1, que corresponden a células cancerosas y en azul los genes sobreexpresados en áreas Sox2, que corresponden a macrófagos asociados a tumores. La zona gris son genes no diferencialmente expresados entre ambas áreas.
+
+Otra forma de acceder a la información es a través de una tabla interactiva usando el paquete DT.
+```{r}
+updn_cols <- c(RColorBrewer::brewer.pal(6, 'Greens')[2], RColorBrewer::brewer.pal(6, 'Purples')[2])
+
+DE_genes_toptable_IvS %>% 
+  dplyr::select(c("logFC", "AveExpr", "P.Value", "adj.P.Val")) %>%
+  DT::datatable(caption = 'Iba1 zone vs. Sox2 zone in GlioBastomas (limma-voom)') %>%
+  DT::formatStyle('logFC',
+                valueColumns = 'logFC',
+                backgroundColor = DT::styleInterval(0, rev(updn_cols))) %>%
+  DT::formatSignif(1:4, digits = 4)
+
+```
+
+Se deduce, tanto del MA plot como de la tabla, que genes como LAPTM5, ARGHGDIB, TYROBP, C1QC y SLCO2B1, son genes sobreexpresados en Iba1 en comparación con Sox2 y, si se evalúan sus funciones, son característicos de células mieloides, especialmente de macrófagos y microglía, lo cual encaja perfectamente con las células TAM. 
+
+### 6.3.1 Análisis de Expresión Diferencial (DE) para la variable Grupo: Iba1/Sox2 + tratamiento/control + Primary/Recurrence
+
+Para poder hacer el análisis de los objetivos descritos, se genera una nueva matriz de diseño que contenga una variable compuesta por la información necesaria para luego poder realizar los análisis. Así que se construye una nueva variable compuesta por el SegmentLabel+ trial_setting + tumor_setting.
+```{r}
+colData(datos_ruv)$grupo <- paste(colData(datos_ruv)$SegmentLabel, colData(datos_ruv)$trial_setting, colData(datos_ruv)$tumor_setting, sep = "_")
+```
+
+Se construye una matriz de diseño con la variable `grupo` que se compone de las 3 variables agrupadas, usando los datos donde se ha eliminado el efecto de lote con el método Ruv4.
+
+Se añaden las matrices W resultantes de RUV4 a la matriz de diseño como covariables.
+```{r}
+design2 <- model.matrix(~0 + grupo + ruv_W1 + ruv_W2, data = colData(datos_ruv))
+colnames(design2)
+```
+
+Se redefinen los nombres.
+```{r}
+colnames(design2) <- gsub("^grupo","",colnames(design2))
+colnames(design2)
+```
+
+Se obtienen 8 niveles, (2^3). 
+
+Se construye una matriz de contraste para el análisis de expresion diferencial (DE) entre tratamiento y control.
+```{r}
+contr_matrix_tratamiento <- makeContrasts(
+Iba1_Nivo_vs_Control_Rec = Iba1_Nivolumab_Recurrence - Iba1_Control_Recurrence,
+SOX2_Nivo_vs_Control_Rec = Sox2_Nivolumab_Recurrence - Sox2_Control_Recurrence,
+levels = colnames(design2)
+)
+```
+
+La expresión diferencial se evalúa utilizando estadísticos moderados empírico-bayesianos implementados en limma.
+```{r}
+keep <- filterByExpr(dge, design2)
+dge_filtrado2 <- dge[keep, ]
+
+v2 <- voom(dge_filtrado2, design2, plot = TRUE)
+
+fit2 <- lmFit(v2) 
+
+fit_contrast2 <- contrasts.fit(fit2, contrasts = contr_matrix_tratamiento) 
+
+efit2 <- eBayes(fit_contrast2, robust = TRUE)
+```
+
+Se mide qué genes son estadísticamente significativos.
+```{r}
+results_efit2<- decideTests(efit2, p.value = 0.05)
+summary_efit2 <- summary(results_efit2)
+
+summary_efit2
+```
+
+Se observa que la mayoría de genes forman parte de la clase No Significativos.
+
+Se extraen los resultados de ambos contrastes en froma de tabla.
+Se genera un volcano plot, para una mejor observación de estos resultados.
+```{r}
+resultado_Iba1 <- topTable(efit2, coef = "Iba1_Nivo_vs_Control_Rec", number = Inf, sort.by = "P")
+
+resultado_Sox2 <- topTable(efit2, coef = "SOX2_Nivo_vs_Control_Rec", number = Inf, sort.by = "P")
+```
+
+Se define el umbral de significación.
+```{r}
+resultado_Iba1$significant <- with(resultado_Iba1, adj.P.Val < 0.05 & abs(logFC) > 1)
+
+resultado_Sox2$significant <- with(resultado_Sox2, adj.P.Val < 0.05 & abs(logFC) > 1)
+```
+
+Se crean los Volcano Plot.
+```{r}
+library(ggplot2)
+
+Volcano_Iba1 <- ggplot(resultado_Iba1, aes(x = logFC, y = -log10(adj.P.Val))) +  geom_point(aes(color = significant), alpha = 0.6) +
+  scale_color_manual(values = c("grey", "red")) +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+  theme_minimal() +
+  labs(
+    title = "Iba1+ AOIs",
+    x = "log2 Fold Change",
+    y = "-log10(FDR)"
+  )
+
+Volcano_Sox2 <- ggplot(resultado_Sox2, aes(x = logFC, y = -log10(adj.P.Val))) +  geom_point(aes(color = significant), alpha = 0.6) +
+  scale_color_manual(values = c("grey", "blue")) +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+  theme_minimal() +
+  labs(title = "Sox2+ AOIs", x = "log2 Fold Change", y = "-log10(FDR)")
+
+library(patchwork)
+
+combined_volcano <- Volcano_Iba1 + Volcano_Sox2 + plot_layout(ncol = 2) + plot_annotation(title = "Volcano Plot de Expresión Diferencial", subtitle = "Nivolumab vs Control en pacietes Recurrentes")
+combined_volcano
+
+```
+
+No se observan diferencias significativas entre la expresión génica de los pacientes recurrentes tratados con Nivolumab o pacientes recurrentes control, en ninguna de las dos zonas celulares analizadas.
+Esto nos indica que el tratamiento no está siendo efectivo, ya que no se está desarrollando una activación de la respuesta inmunitaria, que cambiaría el perfil de expresión genética de ambas zonas celulares.
+
+A continuación se analizará si existe diferencia en la efectividad del tratamiento en personas con tumores primarios y recurrentes.
+```{r}
+contr_matrix_tipotumor <- makeContrasts(
+Iba1_Nivo_Pri_vs_Rec = Iba1_Nivolumab_Primary - Iba1_Nivolumab_Recurrence,
+SOX2_Nivo_Pri_vs_Rec = Sox2_Nivolumab_Primary - Sox2_Nivolumab_Recurrence,
+levels = colnames(design2)
+)
+```
+
+La expresión diferencial se evalua utilizando estadísticos moderados empírico-bayesianos implementados en limma.
+
+Se mide qué genes son estadísticamente significativos.
+```{r}
+fit_contrast3 <- contrasts.fit(fit2, contrasts = contr_matrix_tipotumor) 
+
+efit3 <- eBayes(fit_contrast3, robust = TRUE)
+
+results_efit3<- decideTests(efit3, p.value = 0.05)
+summary_efit3 <- summary(results_efit3)
+
+summary_efit3
+```
+
+Se observa de nuevo como la mayoría de genes forman parte de la clase No Significativos.
+
+Se extraen los resultados de ambos contrastes en froma de tabla.
+
+Se define el umbral de significación.
+
+Se genera un volcano plot, para una mejor observación de estos resultados.
+```{r}
+resultado_Iba1T <- topTable(efit3, coef = "Iba1_Nivo_Pri_vs_Rec", number = Inf, sort.by = "P")
+
+resultado_Sox2T <- topTable(efit3, coef = "SOX2_Nivo_Pri_vs_Rec", number = Inf, sort.by = "P")
+
+resultado_Iba1T$significant <- with(resultado_Iba1T, adj.P.Val < 0.05 & abs(logFC) > 1)
+
+resultado_Sox2T$significant <- with(resultado_Sox2T, adj.P.Val < 0.05 & abs(logFC) > 1)
+
+Volcano_Iba1T <- ggplot(resultado_Iba1T, aes(x = logFC, y = -log10(adj.P.Val))) +  geom_point(aes(color = significant), alpha = 0.6) +
+  scale_color_manual(values = c("grey", "red")) +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+  theme_minimal() +
+  labs(
+    title = "Iba1+ AOIs",
+    x = "log2 Fold Change",
+    y = "-log10(FDR)"
+  )
+
+Volcano_Sox2T <- ggplot(resultado_Sox2T, aes(x = logFC, y = -log10(adj.P.Val))) +  geom_point(aes(color = significant), alpha = 0.6) +
+  scale_color_manual(values = c("grey", "blue")) +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+  theme_minimal() +
+  labs(title = "Sox2+ AOIs", x = "log2 Fold Change", y = "-log10(FDR)")
+
+library(patchwork)
+
+combined_volcano <- Volcano_Iba1T + Volcano_Sox2T + plot_layout(ncol = 2) + plot_annotation(title = "Volcano Plot de Expresión Diferencial", subtitle = "Primary vs Recurrence en pacietes tratados con Nivolumab")
+combined_volcano
+
+
+```
+
+Se observa que no hay diferencias significativas entre los pacientes con tumores primarios y recurrentes tratados con Nivolumab en ninguna de las dos zonas celulares. Esto demuestra que el tratamiento no es más efectivo en pacientes con tumores primarios, hecho que apoya de nuevo la idea de que el tratamiento no es efectivo.
+
+Debido a los resultados encontrados hasta ahora, se decide realizar la comparación entre las zonas celulares Iba1 y Sox2. Para ello, se construye una nueva matriz que contrasta los grupos Iba1_Control_Primary vs Sox2_Control_Primary. Intentando representar condiciones "vírgenes" para analizar las diferencias entre las zonas celulares Iba1 y Sox2.
+
+Se elige el método de corrección de efecto de lote Limma, a diferencia de Ruv4 implementado anteriormente, para familiarizarse también con este método en el pipeline.
+```{r}
+colData(datos_lrb)$grupo <- paste(colData(datos_lrb)$SegmentLabel, colData(datos_lrb)$trial_setting, colData(datos_lrb)$tumor_setting, sep = "_")
+```
+
+Se construye una matriz de diseño con la variable `grupo` que se compone de las 3 variables agrupadas, usando los datos donde se ha eliminado el efecto de lote con el método Limma.
+
+En este caso no se añaden los pesos como covariables, sino que se debería añadir el factor que aporta variabilidad técnica como factor fijo en la ecuación. 
+
+El problema es que en este caso, no se puede añadir la variable `SlideName` como factor fijo en la matriz de diseño ya que el factor `SlideNameSaraWTATMA6` no es estimable. Este aviso nos indica que esta columna es redundante y puede expresarse como la combinación de otras.
+
+Por este motivo se emplea `SlideName` como bloqueo, lo que permite controlar la variación técnica por slide. 
+```{r}
+design_limma <- model.matrix(~0 + grupo, data = colData(datos_lrb))
+colnames(design_limma)
+```
+
+Se redefinen los nombres.
+```{r}
+colnames(design_limma) <- gsub("^grupo","",colnames(design_limma))
+colnames(design_limma)
+```
+
+Se obtienen 8 niveles de la variable grupo. 
+
+Al pasar el `consensus.correlation` a `lmFit`, se "bloquea" el efecto técnico. Este evita que el modelo confunda la variabilidad entre portaobjetos con diferencias biológicas reales, aumentando mucho la potencia estadística para detectar cambios reales entre Iba1 y Sox2.
+```{r}
+dge_limma <- SE2DGEList(datos_lrb)
+
+v_limma <- voom(dge_limma, design_limma, plot = TRUE)
+
+corfit <- duplicateCorrelation(
+  v_limma,
+  design = design_limma,
+  block = colData(datos_lrb)$SlideName
+)
+
+fit_limma <- lmFit(
+  v_limma,
+  design_limma,
+  block = colData(datos_lrb)$SlideName,
+  correlation = corfit$consensus
+)
+```
+
+Se construye la matriz de contraste para el análisis de expresión diferencial (DE) entre Iba1 y Sox2 en situaciones de tumor primario y sin aplicar el tratamiento.
+```{r}
+contr_matrix_limma <- makeContrasts(
+Iba1_vs_Sox2_Control_Primary = Iba1_Control_Primary - Sox2_Control_Primary,
+levels = colnames(design_limma)
+)
+
+fit_contrast_limma <- contrasts.fit(fit_limma, contrasts = contr_matrix_limma) 
+
+efit_limma <- eBayes(fit_contrast_limma, robust = TRUE)
+```
+
+Se genera un volcano plot, para la mejor observación de estos resultados.
+```{r}
+resultado_limma <- topTable(efit_limma, coef = "Iba1_vs_Sox2_Control_Primary", number = Inf, sort.by = "P")
+
+resultado_limma$significant <- with(resultado_limma, adj.P.Val < 0.05 & abs(logFC) > 1)
+
+ggplot(resultado_limma, aes(x = logFC, y = -log10(adj.P.Val))) +  geom_point(aes(color = significant), alpha = 0.6) +
+  scale_color_manual(values = c("grey", "red")) +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+  theme_minimal() +
+  labs(
+    title = "Iba1+ vs. Sox2+ AOIs en pacientes Control con tumores primarios",
+    x = "log2 Fold Change",
+    y = "-log10(FDR)"
+  )
+
+```
+
+El Volcano Plot resultante del contraste Iba1+ vs. Sox2+ muestra una asimetría hacia el enriquecimiento de genes en la población mieloide (Iba1), con una significancia estadística extremadamente elevada (FDR < $10^{-40}$). Esta distribución confirma que la estrategia de bloqueo por `SlideName` ha preservado las identidades biológicas de los segmentos, permitiendo que emerjan con claridad tanto las firmas de presentación antigénica en Iba1+ como los factores de progresión tumoral (p. ej., VEGFA) en Sox2+.
+
+# 7. GSEA y visualización con vissE
+
+El Análisis de Enriquecimiento de Conjuntos de Genes (GSEA) es un método bioinformático que permite determinar si un conjunto de genes de un dataset está relacionado y muestra cambios de forma coordinada en una condición concreta. 
+
+En este pipeline se hará uso el método de GSEA del paquete limma que utiliza la función `fry()`.
+
+Es necesario seleccionar colecciones de genes, donde se hayan definido previamente asociaciones entre ellos según su función biológica, su implicación en rutas metabólicas o vías de señalización.
+
+Se seleccionan los siguientes conjuntos de genes para realizar un análisis de enriquecimiento de conjuntos de genes:
+
+  - MSigDB Hallmarks: conjuntos de genes de la colección hallmarks de MSigDB.
+
+  - MSigDB C2: conjuntos de genes de la colección C2 de MSigDB, que contiene conjuntos de genes curados, como aquellos obtenidos de bases de datos como BioCarta, KEGG, PID y Reactome, así como de experimentos de perturbación química o genética.
+
+  - GO BP: procesos biológicos de la base de datos de ontología génica (gene ontology).
+
+  - GO MF: funciones moleculares de la base de datos de ontología génica.
+
+  - GO CC: componentes celulares de la base de datos de ontología génica.
+
+FDR < 0.05 indica que el conjunto de genes está significativamente enriquecido.
+
+## 7.1 Cargar conjunto de genes
+
+Se cargan los conjuntos de genes utilizando el paquete `msigdb` y se extraen únicamente los conjuntos de genes que se han descrito.
+```{r, warning=FALSE, message=FALSE}
+
+library(msigdb)
+library(GSEABase)
+
+msigdb_hs <- getMsigdb(version = '7.2') 
+msigdb_hs <- appendKEGG(msigdb_hs) #Añadimos información de vías KEGG
+
+sc <- listSubCollections(msigdb_hs) #Lista todas las subcolecciones dentro de MSigDB
+
+gsc <- c(subsetCollection(msigdb_hs, c('h')),
+  subsetCollection(msigdb_hs, 'c2', sc[grepl("^CP:",sc)]),
+  subsetCollection(msigdb_hs, 'c5', sc[grepl("^GO:",sc)])) %>%
+  GeneSetCollection() #filtra las subcolecciones de interés y las organiza en un objeto con el formato estándar para análisis de enriquecimiento con funciones como fry o GSEA.
+```
+
+## 7.2 Analisis de enriquecimiento
+
+Se preprocesan los datos de los conjuntos de genes cargados, filtrando los que contienen menos de 5 genes y creando una lista de índices para formatear los resultados antes de aplicar `fry()`.
+
+Se elige trabajar con el objeto `v_limma` correspondiente al contraste Iba1 vs Sox2 en tumores primarios de pacientes control, con el fin de caracterizar diferencias funcionales basales entre compartimentos celulares. 
+```{r}
+fry_indices_limma <- ids2indices(lapply(gsc, geneIds), rownames(v_limma), remove.empty = FALSE)
+names(fry_indices_limma) <- sapply(gsc, setName)
+
+gsc_category_limma <- sapply(gsc, function(x) bcCategory(collectionType(x)))
+gsc_category_limma <- gsc_category_limma[sapply(fry_indices_limma, length) > 5]
+
+gsc_subcategory_limma <- sapply(gsc, function(x) bcSubCategory(collectionType(x)))
+gsc_subcategory_limma <- gsc_subcategory_limma[sapply(fry_indices_limma, length) > 5]
+
+fry_indices_limma <- fry_indices_limma[sapply(fry_indices_limma, length) > 5]
+
+names(gsc_category_limma) = names(gsc_subcategory_limma) = names(fry_indices_limma)
+```
+
+Ahora se aplica `fry()` con todos los conjuntos de genes filtrados.
+
+Se dividen los conjuntos de genes por categoría (gsc_category) y se aplica la función para cada categoría.
+
+Se diseña una función para el output donde se combinan los resultados en un dataframe.
+```{r}
+fry_indices_cat_limma <- split(fry_indices_limma, gsc_category_limma[names(fry_indices_limma)])
+fry_res_out_limma <- lapply(fry_indices_cat_limma, function (x) {
+  limma::fry(v_limma, index = x, design = design_limma, contrast = contr_matrix_limma[,1], robust = TRUE)
+})
+
+post_fry_format_limma <- function(fry_output_limma, gsc_category_limma, gsc_subcategory_limma){
+  names(fry_output_limma) <- NULL
+  fry_output_limma <- do.call(rbind, fry_output_limma)
+  fry_output_limma$GenesetName <- rownames(fry_output_limma)
+  fry_output_limma$GenesetCat <- gsc_category_limma[rownames(fry_output_limma)]
+  fry_output_limma$GenesetSubCat <- gsc_subcategory_limma[rownames(fry_output_limma)]
+  return(fry_output_limma)
+}
+
+fry_res_sig_limma <- post_fry_format_limma(fry_res_out_limma, gsc_category_limma, gsc_subcategory_limma) %>%
+  as.data.frame() %>%
+  filter(FDR < 0.05) 
+
+head(fry_res_sig_limma)
+
+```
+
+Se grafican los 10 conjuntos de genes Up y Down - Regulated en Iba1 frente Sox2. El conjunto de genes que se encuentran Up-regulated están más activos en Iba1, en cambio, los que se encuentran Down-regulated se están más activos en las zonas Sox2.
+```{r, fig.width=8, fig.height=6}
+fry_res_sig_limma %>%
+  arrange(FDR) %>%
+  filter(Direction == "Up") %>%
+  .[seq(10),] %>%
+  mutate(GenesetName = substr(GenesetName, 1, 50),
+         GenesetName = factor(GenesetName, levels = GenesetName[order(-log10(FDR))])) %>%
+  ggplot(aes(GenesetName, -log(FDR))) +
+  geom_bar(stat = "identity", fill = "red") +
+  theme_bw() +
+  coord_flip() +
+  ggtitle("Up-regulated Iba1+ Condition")
+```
+
+
+```{r, fig.width=8, fig.height=6}
+fry_res_sig_limma %>%
+  arrange(FDR) %>%
+  filter(Direction == "Down") %>%
+  .[seq(10),] %>%
+  mutate(GenesetName = substr(GenesetName, 1, 50),
+         GenesetName = factor(GenesetName, levels = GenesetName[order(-log10(FDR))])) %>%
+  ggplot(aes(GenesetName, -log(FDR))) +
+  geom_bar(stat = "identity", fill = "blue") +
+  theme_bw() +
+  coord_flip() +
+  ggtitle("Down-regulated Iba1+ Condition")
+```
+
+Los conjuntos sobreexpresadsos en Iba1 muestran una significación estadística extrema ($-log(FDR) > 100$), lo que indica una señal biológica masiva y coherente con el linaje de macrófagos/microglía. Se destaca la fagocitosis de los patógenos, que es el conjunto de genes más robusto y que en un tumor indica que la microglía está intentando limpiar el entorno tumoral. La red Tyrobp que describe una activación profunda de las células y la regulación del superóxido (ROS), que implica actividad efectora pro-inflamatoria.
+
+Los conjuntos de genes down-regulated son los que se sobreexpresan en Sox2 indicadores de células tumorales. Es coherente lo que se observa, ya que se asocian a una anomalía clínica donde se modifican las estructuras del tejido cerebral, también a la proliferación celular maligna y a genes en estados menos diferenciados.
+
+Es un análisis correcto porque coincide con los resultados observados en el volcano plot. Indagando en las funciones de las vías, los genes "Up" definen funciones efectoras inmunes (Iba1), mientras que los genes "Down" definen la identidad del linaje neural y la progresión tumoral (Sox2). Esto confirma que se logra capturar con éxito la interacción entre el tumor y la respuesta inmunitaria del paciente.
+
+En conclusión, el uso de GeoMx DSP combinado con un riguroso análisis bioinformático permite diseccionar la realidad de estas poblaciones celulares que coexisten en estrecha proximidad. Este enfoque hace posible perfilar sus funciones específicas, capturando con éxito la compleja interacción entre la progresión del linaje tumoral (Sox2+) y la respuesta inmunitaria del paciente (Iba1+).
+
+# 8. Deconvolución celular
+
+La Deconvolución Celular es una técnica que permite estimar las proporciones de los diferentes tipos celulares que se encuentran en una muestra de tejido.
+
+En el paquete `standR`, se usa la función `prepareSpatialDecon` para comunicar un objeto `SpatialExperiment` al paquete `SpatialDecon`, con el fin de realizar la deconvolución celular.
+
+Sin embargo, `SpatialDecon` requiere sondas negativas para establecer el ruido de fondo de los datos. 
+El ruido de fondo es la señal medida por el equipo que no proviene de la expresión real de los genes, sino de artefactos técnicos.
+
+Por lo tanto, es necesario reconstruir el objeto `SpatialExperiment` usando el parámetro `rmNegProbe = FALSE`, lo que desactiva la eliminación de las sondas negativas, y luego volver a ejecutar los pasos de control de calidad (QC).
+
+Se realiza la preparación de los datos, desde un punto de partida muy inicial:
+leer datos, QC por ROI, QC conteo núcleos >150, normalización por TMM. 
+En este caso se puede utilizar directamente los `datos_tmm`.
+
+```{r}
+library(SpatialDecon)
+
+colData(datos_tmm)$grupo <- paste(colData(datos_tmm)$SegmentLabel, colData(datos_tmm)$trial_setting, colData(datos_tmm)$tumor_setting, sep = "_")
+
+datos_deco <- prepareSpatialDecon(datos_tmm)
+```
+
+El objeto que se obtiene con la función `prepareSpatialDecon()` contiene dos matrices, la matriz de conteos normalizados y la matriz del ruido de fondo.
+```{r}
+names(datos_deco)
+```
+
+A continuación, se prosigue con la ejecución de `SpatialDecon`, el paquete de R cuyo algoritmo matemático permite estimar las proporciones celulares gestionando simultáneamente el ruido de fondo.
+
+Para este análisis se utiliza la matriz llamada `SafeTME` como base de referencia, que está diseñada para estimar células inmunes y del estroma en el microambiente tumoral. Las matrices son diccionarios que relacionan el tipo y la cantidad de cada gen que están expresados en cada linaje celular. La matriz `Safe_TME` ha sido creada específicamente para evitar genes que se expresan comúnmente en células cancerosas, de modo que la estimación de los tipos celulares no se vea sesgada.
+
+Mediante un modelo de regresión lineal, el algoritmo utiliza esta referencia para desglosar la señal total de cada AOI, calculando qué proporción de cada tipo celular explica de forma óptima el perfil de expresión observado en la muestra.
+```{r}
+data("safeTME")
+
+heatmap(sweep(safeTME, 1, apply(safeTME, 1, max), "/"),
+        labRow = NA, margins = c(10, 5))
+```
+
+Se aplica la función `spatialdecon()` para los datos normalizados, teniendo en cuenta el ruido de fondo y el catálogo `SafeTME`.
+```{r}
+res <- spatialdecon(norm = datos_deco$normCount,
+                   bg = datos_deco$backGround,
+                   X = safeTME,
+                   align_genes = TRUE)
+```
+
+Se crean subconjuntos de las zonas celulares Iba1 y Sox2, para una observación más ordenada que permite una mejor comparación.
+```{r}
+samples_subset_iba1 <- colnames(datos_tmm)[colData(datos_tmm)$SegmentLabel == "Iba1"]
+
+subset_prop_iba1 <- res$prop_of_all[,samples_subset_iba1]
+
+spe_sub_iba1 <- datos_tmm[,samples_subset_iba1]
+
+samples_subset_sox2 <- colnames(datos_tmm)[colData(datos_tmm)$SegmentLabel == "Sox2"]
+
+subset_prop_sox2 <- res$prop_of_all[,samples_subset_sox2]
+
+spe_sub_sox2 <- datos_tmm[,samples_subset_sox2]
+```
+
+Se crean los gráficos.
+```{r}
+library(tidyverse)
+library(dplyr)
+
+# 1. Convertir la matriz de proporciones a formato largo
+df_plot_iba1 <- as.data.frame(t(subset_prop_iba1)) %>% 
+  rownames_to_column("AOI") %>%
+  pivot_longer(cols = -AOI, names_to = "CellType", values_to = "Proportion")
+
+# 2. Extraer la información de los grupos desde el colData
+grupos_iba1 <- as.data.frame(colData(spe_sub_iba1)) %>%
+  rownames_to_column("AOI") %>%
+  dplyr::select(AOI, grupo) # Ajusta 'Grupo' al nombre real de tu columna
+
+# 3. Unir las proporciones con los grupos
+df_final_iba1 <- left_join(df_plot_iba1, grupos_iba1, by = "AOI")
+
+ggplot(df_final_iba1, aes(x = AOI, y = Proportion, fill = CellType)) +
+  geom_bar(stat = "identity", width = 1) +
+  facet_wrap(~grupo, scales = "free_x", ncol = 4) + 
+  theme_minimal() +
+  labs(x = "Muestras por Grupo", 
+       y = "Proporción Celular",
+       fill = "Tipo Celular") +
+  theme(
+    axis.text.x = element_blank(), 
+    axis.ticks.x = element_blank(),
+    panel.spacing = unit(0.1, "lines"), # Une un poco más las barras
+    strip.background = element_rect(fill = "gray90"), # Estilo para la etiqueta del grupo
+    legend.position = "bottom"
+  )
+
+# 1. Convertir la matriz de proporciones a formato largo
+df_plot_sox2 <- as.data.frame(t(subset_prop_sox2)) %>% 
+  rownames_to_column("AOI") %>%
+  pivot_longer(cols = -AOI, names_to = "CellType", values_to = "Proportion")
+
+# 2. Extraer la información de los grupos desde el colData
+grupos_sox2 <- as.data.frame(colData(spe_sub_sox2)) %>%
+  rownames_to_column("AOI") %>%
+  dplyr::select(AOI, grupo) # Ajusta 'Grupo' al nombre real de tu columna
+
+# 3. Unir las proporciones con los grupos
+df_final_sox2 <- left_join(df_plot_sox2, grupos_sox2, by = "AOI")
+
+ggplot(df_final_sox2, aes(x = AOI, y = Proportion, fill = CellType)) +
+  geom_bar(stat = "identity", width = 1) +
+  facet_wrap(~grupo, scales = "free_x", ncol = 4) + 
+  theme_minimal() +
+  labs(x = "Muestras por Grupo", 
+       y = "Proporción Celular",
+       fill = "Tipo Celular") +
+  theme(
+    axis.text.x = element_blank(), 
+    axis.ticks.x = element_blank(),
+    panel.spacing = unit(0.1, "lines"), # Une un poco más las barras
+    strip.background = element_rect(fill = "gray90"), # Estilo para la etiqueta del grupo
+    legend.position = "bottom"
+  )
+```
+
+Los graficos se dividen en paneles según los 8 niveles posibles de la variable `grupo`. Cada barra vertical corresponde a una AOI y muestra la proporción de cada tipo celular mediante una escala de colores.
+
+Se observa una distinción clara de las proporciones celulares entre las dos zonas estudiadas. En las AOI de Iba1 se encuentran mayoritariamente proporciones de macrófagos, confirmando así la identidad mieloide de estos segmentos. Mientras que en las AOI de Sox2 hay una proporción muy alta de células T (CD4+ y CD8+), este hallazgo representa que las células cancerígenas han sido infiltradas por los linfocitos. a pesar de eso, no se observan diferencias significativas entre pacientes tratados y o tratados, ni en la deconvolución ni como se ha mostrado anteriormente en el análisis diferencial, lo que se podría clasificar como una presunta infiltración ineficaz.
+
+Se observa una mayor variabilidad intragrupo en pacientes recurrentes que en pacientes primarios, lo que sugiere una mayor heterogeneidad celular tras la recurrencia del tumor.
+
+Se observa, también, una capa de células endoteliales y fibroblastos constante en ambas zonas.
+
+# 9. Análisis de proporción diferencial
+
+El análisis de proporción diferencial tiene como objetivo identificar estadísticamente cambios en la abundancia relativa de tipos celulares entre diferentes condiciones experimentales. Para ello, se emplea la librería `speckle`, que implementa la función `propeller()`.
+
+En este apartado se analiza la distinción entre los nichos Iba1 y Sox2 en pacientes control con tumores primarios. Los resultados de la deconvolución `res` se procesan mediante la función `convertDataToList()` para adaptar las proporciones a un formato que sea compatible con `propeller.ttest()`.
+
+El fundamento matemático de este test reside en la transformación de las proporciones mediante la función arcoseno (`asin`), la cual estabiliza la varianza y permite que el test sea más robusto. Finalmente, se aplica el contraste entre las poblaciones celulares para identificar aquellas poblaciones celulares que varían significativamente (FDR < 0.05) entre ambos nichos.
+```{r, message=FALSE, warning=FALSE}
+library(speckle)
+
+datos_tmm_df <- datos_tmm
+
+samples_full <- colnames(datos_tmm_df)
+
+prop_full <- res$prop_of_all[, samples_full]
+
+spe_full <- datos_tmm[, samples_full]
+
+propslist <- convertDataToList(prop_full, 
+                               data.type = c("proportions"),
+                               transform="asin",
+                               scale.fac=colData(spe_full)$AOINucleiCount)
+
+design_prop <- model.matrix(~ 0 + grupo, data = as.data.frame(colData(spe_full)))
+
+colnames(design_prop) <- gsub("^grupo","",colnames(design_prop))
+
+contr <- makeContrasts(
+Iba1_vs_Sox2_Control_Primary = Iba1_Control_Primary - Sox2_Control_Primary,
+levels = colnames(design_prop)
+)
+
+outs <- propeller.ttest(propslist, design_prop, contr, robust=TRUE,trend=FALSE, sort=TRUE)
+```
+
+Se realiza la visualización  de las proporciones mediante violin plots.
+```{r}
+
+diff_ct <- outs %>% 
+  filter(FDR < 0.05) %>%
+  rownames()
+
+colData(spe_full)$samples_id <- rownames(colData(spe_full))
+
+prop_full[diff_ct,] %>%
+  as.data.frame() %>%
+  rownames_to_column("CellTypes") %>%
+  gather(samples, prop, -CellTypes) %>%
+  left_join(as.data.frame(colData(spe_full)), by = c("samples"="samples_id")) %>%
+  ggplot(aes(SegmentLabel, prop, fill = CellTypes)) +
+  geom_violin() +
+  facet_wrap(~CellTypes) +
+  theme_bw() +
+  xlab("Iba1 vs Sox2 en pacientes control con tumores primarios") +
+  ylab("Proportion")
+
+```
+
+Los resultados muestran las diferencias en la composición celular entre las zonas Iba1 y Sox2 para el grupo de pacientes control con tumores primarios. Tras el análisis, destacan dos hallazgos principales con significación estadística:
+
+Macrófagos: Presentan un enriquecimiento marcado en las zonas Iba1, lo que confirma la eficacia del marcador para aislar nichos mieloides.
+
+Células T CD8+: Se encuentran en una proporción significativamente mayor en las zonas Sox2, corroborando una vez más la infiltración de linfocitos citotóxicos dentro del compartimento tumoral.
+
+Por el contrario, el resto de los linajes celulares (como fibroblastos o células endoteliales) mantienen proporciones similares en ambas regiones.
+
+# 10. Conclusiones
+
+El análisis integral de los datos de transcriptómica espacial de GeoMx DSP mediante el flujo de trabajo de GeoMxTools y StandR, permite extraer las siguientes conclusiones fundamentales:
+
+  - 1. Robustez del Pipeline Bioinformático: 
+  
+  El pipeline cuenta con métodos robustos de preprocesamiento, como la estrategia de normalización y corrección de efectos técnicos, que permiten reducir la variabilidad técnica y potenciar las diferencias biológicas entre condiciones.
+
+  - 2. Validación de la Identidad de los segmentos celulares (Iba1 y Sox2): 
+  
+  Se ha confirmado mediante los análisis posteriores (expresión diferencial, análisis de enriquecimiento, deconvolución celular y análisis de proporción diferencial) que la selección de segmentos fue precisa.
+  
+  - 3. Evidencia de Infiltración Ineficaz: 
+  
+  Uno de los hallazgos más relevantes del análisis de este dataset es la detección de una elevada proporción de linfocitos T (CD4+ y CD8+) dentro de las zonas tumorales (Sox2+). A pesar de esta infiltración, la ausencia de diferencias transcriptómicas significativas entre pacientes tratados con Nivolumab y controles sugiere un estado de infiltración funcionalmente ineficaz. Este hallazgo coincide con el estudio publicado de este dataset.
+  
+
+```{r}
+
+```
