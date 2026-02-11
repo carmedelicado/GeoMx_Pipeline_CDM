@@ -127,9 +127,7 @@ The pipeline generates:
 
 If you use this pipeline or dataset, please cite:
 
-Delicado Mercader C, et al. Spatial transcriptomic analysis reveals lack of response to PD-1 blockade in recurrent glioblastoma. Acta Neuropathologica, 2025. DOI: https://doi.org/10.1007/s00401-025-02937-9
-
-Dataset DOI: https://doi.org/10.5281/zenodo.16839828
+Delicado Mercader, C. Desarrollo de un pipeline bioinformático para el análisis de datos GeoMx™ Digital Spatial Profiler. GitHub repository, available at: https://github.com/carmedelicado/GeoMx_Pipeline_CDM. Accessed on [Date].
 
 ## License
 
