@@ -2,8 +2,18 @@
 
 A robust spatial transcriptomics pipeline for GeoMx DSP data integration, leveraging GeoMxTools for data orchestration and standR for advanced preprocessing (QC, filtration, normalization, and batch effect correction) and downstream analysis (DE Analysis, GSEA, cell-type deconvolution, and Differential Proportion Analysis).
 
+## Table of Contents
 
-# GeoMx DSP Spatial Transcriptomics Pipeline
+1. [Pipeline Structure](#pipeline-structure)
+2. [Development Framework](#development-framework)
+3. [Dataset Description](#dataset-description)
+4. [Installation](#installation)
+5. [Usage](#usage)
+6. [Output](#output)
+7. [Citation](#citation)
+8. [License](#license)
+
+## GeoMx DSP Spatial Transcriptomics Pipeline
 
 **Author:** Carme Delicado Mercader
 
@@ -26,7 +36,7 @@ This repository provides a modular and reproducible pipeline designed to transfo
 While the workflow is versatile and applicable to any GeoMx transcriptomics study, it is implemented here using a Tumor Microenvironment (TME) dataset as a case study, focusing on immune infiltration and therapeutic response.
 
 
-# Pipeline Structure
+## Pipeline Structure
 
 The proposed pipeline consists of two main phases:
 
@@ -37,7 +47,7 @@ The proposed pipeline consists of two main phases:
 All steps are implemented in a single R Markdown document named PIPELINE.Rmd.
 
 
-# Development Framework
+## Development Framework
 
 The development of this pipeline is based on two established tools for the analysis of GeoMx DSP data: GeoMxTools and StandR.
 
@@ -56,10 +66,71 @@ https://davislaboratory.github.io/GeoMXAnalysisWorkflow/articles/GeoMXAnalysisWo
 
 # Dataset Description
 
-The dataset used in this study originates from a spatial transcriptomic analysis of recurrent glioblastoma (GBM) samples generated using GeoMx™ Digital Spatial Profiling (DSP). This dataset was deposited in Zenodo and is publicly available via DOI: https://doi.org/10.5281/zenodo.16839828
+The dataset used in this study originates from a spatial transcriptomic analysis of recurrent glioblastoma (GBM) samples generated using GeoMx™ Digital Spatial Profiling (DSP).
 
 The cohort consists of tumor tissue samples from recurrent GBM patients, including both those treated with neoadjuvant nivolumab—an immune checkpoint inhibitor targeting PD-1—and untreated controls. Tumor regions were selected based on high densities of SOX2⁺ tumor cells and IBA1⁺ tumor-associated macrophages (TAMs), representing the two most abundant cell populations in GBM. GeoMx DSP was used to generate targeted spatial transcriptomic profiles of these segmented regions, which were subsequently filtered and processed for downstream analysis.
 
-The deposited files include raw Digital Count Conversion (DCC) outputs, normalized and batch-corrected expression matrices, metadata for all regions of interest (AOIs), and probe-to-gene mappings.
+The deposited files include normalized and batch‑corrected expression matrices, metadata for all regions of interest (AOIs), and probe‑to‑gene mappings. Raw Digital Count Conversion (DCC) files are not included in this repository due to their large size, but they can be downloaded in Zenodo and is publicly available via DOI: https://doi.org/10.5281/zenodo.16839828
 
 This dataset supports the findings of the associated peer-reviewed study “Spatial transcriptomic analysis reveals lack of response to PD-1 blockade in recurrent glioblastoma” published in Acta Neuropathologica (2025), DOI: https://doi.org/10.1007/s00401-025-02937-9
+
+
+## Installation 
+
+This pipeline requires R (>=4.3) and the following packages:
+
+**Install BiocManager if not present**
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+**Core Bioconductor packages**
+BiocManager::install(c(
+    "GeoMxTools", "StandR", "SpatialExperiment",
+    "SpatialDecon", "DESeq2", "limma", "edgeR"
+))
+
+**CRAN packages**
+install.packages(c(
+    "tidyverse", "dplyr", "ggplot2", "networkD3",
+    "ggforce", "ggalluvial", "ggrepel", "R.utils",
+    "knitr", "DT", "readxl", "writexl"
+))
+
+Load libraries in R session
+
+## Usage
+
+  1. Clone the repository:
+
+git clone https://github.com/username/GeoMx_Pipeline_CDM.git
+
+
+  2. Open PIPELINE.Rmd in RStudio.
+
+  3. Follow the instructions in the R Markdown to run preprocessing and downstream analyses.
+
+  4. Ensure that your dataset files are organized in the correct folders as described in the pipeline.
+
+## Output
+
+The pipeline generates:
+
+  - QC and FIltered expression matrices
+  - Normalized and batch-corrected expression matrices
+  - Differential expression (DE) analysis results
+  - Gene set enrichment analysis (GSEA) results
+  - Cell-type deconvolution results
+  - Differential proportion analysis results
+  - Figures and plots summarizing the results
+
+## Citation
+
+If you use this pipeline or dataset, please cite:
+
+Delicado Mercader C, et al. Spatial transcriptomic analysis reveals lack of response to PD-1 blockade in recurrent glioblastoma. Acta Neuropathologica, 2025. DOI: https://doi.org/10.1007/s00401-025-02937-9
+
+Dataset DOI: https://doi.org/10.5281/zenodo.16839828
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
