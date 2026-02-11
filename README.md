@@ -2,33 +2,64 @@
 
 A robust spatial transcriptomics pipeline for GeoMx DSP data integration, leveraging GeoMxTools for data orchestration and standR for advanced preprocessing (QC, filtration, normalization, and batch effect correction) and downstream analysis (DE Analysis, GSEA, cell-type deconvolution, and Differential Proportion Analysis).
 
+
 # GeoMx DSP Spatial Transcriptomics Pipeline
 
 **Author:** Carme Delicado Mercader
+
 **Date:** 11-Feb-2026 
-**Project:** Implementation of a hybrid bioinformatics pipeline for GeoMx™ DSP data analysis.
 
-Welcome to my Master's thesis repository. This project was developed as to share de pipeline developed for the final thesis at the Master’s in Bioinformatics of UNIR.
+**Project:** Implementation of a bioinformatics pipeline for GeoMx™ DSP data analysis.
 
-University: Universidad Internacional de la Rioja
+Welcome to my Master's thesis repository. This project was developed with the aim of sharing the pipeline and all the documentation involved in the final thesis for the Master's in Bioinformatics at UNIR.
+
+**University:** Universidad Internacional de la Rioja
+
 **Developed at:** Statistics and Bioinformatics Unit (UEB) in Vall d'Hebron Research Institute (VHIR)
+
 **Tutor:** Mireia Ferrer Almirall (UEB) and Maria Belén LLedo Bosch (UNIR)
+
 **Main Technologies:** NanoString GeoMx™ DSP, R, standR, GeoMxTools, Rmarkdown
 
 This repository provides a modular and reproducible pipeline designed to transform raw GeoMx™ Digital Spatial Profiling (DSP) data into meaningful biological insights. 
 
-While the workflow is versatile and applicable to any GeoMx transcriptomics study, it is implemented here using a Tumor Microenvironment (TME) dataset as a case study, focusing on immune infiltration and therapeutic response (e.g., Nivolumab).
-
-## Pipeline Structure
-
-The proposed pipeline consists of two main phases.
-
-  - Preprocessing: data loading, QC and filtering, dimensional reduction, normalization and batch effect correction.
-  - Downstream Analysis: DE Analysis, GSEA, cell-type deconvolution, and Differential Proportion Analysis
-
-These have been coded in a unique RMarkdown document.
+While the workflow is versatile and applicable to any GeoMx transcriptomics study, it is implemented here using a Tumor Microenvironment (TME) dataset as a case study, focusing on immune infiltration and therapeutic response.
 
 
-Methodology & Highlights
+# Pipeline Structure
 
-Hybrid Orchestration: Seamless transition from NanoStringGeoMxSet to SpatialExperiment for maximum interoperability.Advanced Normalization: Implementation of TMM (Trimmed Mean of M-values) to stabilize variance across heterogeneous AOIs.In-depth Deconvolution: Use of the safeTME matrix to specifically isolate immune and stromal signals, bypassing common biases found in cancerous cells.Proportion Testing: Statistical validation of cell-type shifts using the Arc-sine (asin) transformation to identify "ineffective infiltration" patterns.RequirementsThe pipeline is developed in R (v4.3+). Key dependencies include:GeoMxTools & NanoStringNCToolsstandR (for robust preprocessing)SpatialDecon (for cell typing)speckle (for propeller proportion testing)limma & edgeR (for statistical modeling)ggplot2 & pheatmap (for visualization)Usage1. Reproduce this projectClone the repository: git clone https://github.com/tu-usuario/GeoMx_TME_Pipeline.gitInput Data: Place your .dcc, .pkc, and Annotation.xlsx files in the data/ folder.Run the analysis: Execute the RMarkdown files in the analysis/ folder sequentially.2. Custom Data AnalysisThe pipeline is parameterized to handle different ROI selection strategies (e.g., Iba1+ for myeloid, Sox2+ for tumor). To adapt it to your data, update the design_matrix in the 3.0_batch_correction.Rmd file.AbstractThis work implements a specialized bioinformatics pipeline for GeoMx™ DSP data to evaluate the immune-tumor interface. By leveraging the standR framework, the pipeline achieves superior batch correction and normalization compared to standard workflows. Applying this to a cohort of primary and recurrent tumors, we identified a state of ineffective immune infiltration: despite high lymphocyte presence in tumor niches (Sox2+), no significant transcriptomic shifts were observed post-treatment, suggesting a suppressed immune state.LicenseCode: MIT LicenseContent: CC BY-NC-SA 4.0ContactLidia Getino-Álvarez [Tu LinkedIn / Email Profesional]
+The proposed pipeline consists of two main phases:
+
+  - Preprocessing: data loading, quality control (QC) and filtering, dimensionality reduction, normalization, and batch effect correction.
+
+  - Downstream analysis: differential expression (DE) analysis, gene set enrichment analysis (GSEA), cell-type deconvolution, and differential proportion analysis.
+
+All steps are implemented in a single R Markdown document named PIPELINE.Rmd.
+
+
+# Development Framework
+
+The development of this pipeline is based on two established tools for the analysis of GeoMx DSP data: GeoMxTools and StandR.
+
+GeoMxTools, the official pipeline developed by NanoString, is used for data loading and initial visualization. This package operates primarily with the NanoStringGeoMxSet object, which is specifically designed to handle GeoMx DSP data structures.
+
+Subsequently, the remaining steps of the pipeline are implemented using StandR, a workflow developed in 2023 that incorporates more robust and updated statistical methodologies. StandR operates on the SpatialExperiment object class, which facilitates interoperability with other Bioconductor packages and simplifies the integration of additional downstream analyses.
+
+The official workflow vignettes for both tools can be found at the following links:
+
+GeoMxTools:
+https://bioconductor.org/packages/devel/workflows/vignettes/GeoMxWorkflows/inst/doc/GeomxTools_RNA-NGS_Analysis.html#8_Visualizing_DE_Genes
+
+StandR:
+https://davislaboratory.github.io/GeoMXAnalysisWorkflow/articles/GeoMXAnalysisWorkflow.html
+
+
+# Dataset Description
+
+The dataset used in this study originates from a spatial transcriptomic analysis of recurrent glioblastoma (GBM) samples generated using GeoMx™ Digital Spatial Profiling (DSP). This dataset was deposited in Zenodo and is publicly available via DOI: https://doi.org/10.5281/zenodo.16839828
+
+The cohort consists of tumor tissue samples from recurrent GBM patients, including both those treated with neoadjuvant nivolumab—an immune checkpoint inhibitor targeting PD-1—and untreated controls. Tumor regions were selected based on high densities of SOX2⁺ tumor cells and IBA1⁺ tumor-associated macrophages (TAMs), representing the two most abundant cell populations in GBM. GeoMx DSP was used to generate targeted spatial transcriptomic profiles of these segmented regions, which were subsequently filtered and processed for downstream analysis.
+
+The deposited files include raw Digital Count Conversion (DCC) outputs, normalized and batch-corrected expression matrices, metadata for all regions of interest (AOIs), and probe-to-gene mappings.
+
+This dataset supports the findings of the associated peer-reviewed study “Spatial transcriptomic analysis reveals lack of response to PD-1 blockade in recurrent glioblastoma” published in Acta Neuropathologica (2025), DOI: https://doi.org/10.1007/s00401-025-02937-9
