@@ -1,0 +1,863 @@
+---
+title: "StandR_Demo"
+author: "Carme Delicado"
+date: "2025-11-18"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    collapsed: true
+    smooth_scroll: true
+    theme: journal
+    highlight: kate
+    df_print: paged
+    code_folding: hide
+---
+
+### 1. Preparación del entorno de trabajo
+
+# Instalación de paquetes necesarios
+
+Como ya tenemos instalado BiocManager, instalamos directamete StandR.
+Usamos buils_vignettes = TRUE, ya que eso nos permitirá abrir el archivo HTML.
+
+```{r setup, include=FALSE}
+options(repos = c(CRAN = "https://cloud.r-project.org"))
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install("StandR")
+
+install.packages('remotes')
+
+remotes::install_github("DavisLaboratory/GeoMXAnalysisWorkflow", build_vignettes = TRUE)
+
+vignette("GeoMXAnalysisWorkflow")
+```
+# Cargar librerías
+```{r}
+library(standR)
+library(tidyverse)
+library(SpatialExperiment)
+library(ggplot2)
+library(ggalluvial)
+library(dplyr)
+library(ggforce)
+library(networkD3)
+library(ggrepel)
+```
+### 2.Uso de standR para procesar y analizar datos transcriptómicos de GeoMx.
+
+# 2.1 Cargar datos
+
+Este conjunto de datos incluye información de cinco láminas.
+La estrategia de selección de los ROI está basada en regiones celulares, centrado principalmente en cinco estructuras que se encuentran en el ganglio linfático: 
+
+  - La zona de células B 
+  - La zona de células T 
+  - El centro germinal 
+  - La médula 
+  - La trabécula
+
+Elegir directorio de trabajo.
+```{r}
+datadir <- (system.file("extdata", package = "GeoMXAnalysisWorkflow"))
+
+setwd(datadir)
+
+list.files(datadir)
+```
+Abrimos los tres archivos(.txt) y los convertimos en data.frame que serán nuestros objetos de trabajo.
+```{r}
+countFile <- read_tsv(file.path(datadir, "count.txt")) %>% as.data.frame()
+
+sampleAnnoFile <- read_tsv(file.path(datadir,"metadata.txt")) %>% as.data.frame()
+
+featureAnnoFile <- read_tsv(file.path(datadir,"genemeta.txt")) %>% as.data.frame()
+```
+Visualizamos las primeras y filas y columnas para tener una idea de como son nuestros archivos.
+```{r}
+dim(countFile)
+head(countFile)[,1:5]
+
+dim(sampleAnnoFile)
+head(sampleAnnoFile)[,1:5]
+
+dim(featureAnnoFile)
+head(featureAnnoFile)[,1:5]
+```
+Juntamos los Datasets en un único objeto.
+```{r}
+datos <- (readGeoMx(countFile, sampleAnnoFile, featureAnnoFile))
+datos
+```
+Chequeamos la información básica.
+
+Vemos que tenemos 18676 genes y 190 ROIs.
+
+Los conteos de los tránscritos se guardan en la sección assay, como conteos crudos y logcounts.
+```{r}
+assayNames(datos)
+
+assay(datos, "counts")[1:5, 1:5]
+
+assay(datos, "logcounts")[1:5, 1:5]
+```
+Los metadatos de los ROI se almacenan en el colData del objeto.
+```{r}
+colData(datos)[1:5,1:5]
+```
+Los metadatos de los genes se almacenan en el rowData del objeto.
+```{r}
+rowData(datos)[1:5,1:5]
+```
+Las negative probes son controles diseñados para medir el nivel de ruido de fondo en un experimento de transcriptómica espacial. Con la función de readGeoMx, ya se incluyen estos parámetros en metadata.
+```{r}
+metadata(datos)$NegProbes[,1:5]
+```
+En el archivo de metadatos generado por Nanostring hay una columna llamada “QCFlags”, que indica las muestras de tejido de mala calidad según su paso preliminar de control de calidad. Si los datos superan correctamente su QC habrá valores NA o celdas vacías en esa columna.
+```{r}
+colData(datos)$QCFlags
+```
+No tenemos ninguna muestra de mala calidad.
+
+Para mejor visualización de las muestras de metadata hacemos un diagrama de Sankey.
+```{r}
+plotSampleInfo(datos, column2plot = c("SlideName", "Type"))
+```
+Probamos también el que hicimos con GeoMxTools
+```{r}
+link1 <- as.data.frame(table(datos$SlideName, datos$Type))
+colnames(link1) <- c("source", "target", "value")
+nodes <- data.frame(name = unique(c(link1$source, link1$target)))
+
+# Convertir a índices 0-based para sankeyNetwork
+link1$source <- match(link1$source, nodes$name) - 1
+link1$target <- match(link1$target, nodes$name) - 1
+
+sankeyNetwork(
+Links = link1,
+Nodes = nodes,
+Source = "source",
+Target = "target",
+Value = "value",
+NodeID = "name",
+fontSize = 12,
+nodeWidth = 30
+)
+```
+# 2.2 Control de calidad (QC) de genes
+Ahora revisamos los datos a nivel de gen. 
+Con la función addPerROIQC podemos añadir estadísticas importantes al colData del objeto. 
+En este ejercicio usaremos rm_genes = TRUE y los valores por defecto min_count = 5 y sample_fraction = 0.9.
+Se calcula para cada gen si tiene como mínimo 5 counts en el 90% de los ROI.
+```{r}
+datos <- addPerROIQC(datos, rm_genes = TRUE)
+
+dim(datos)
+```
+No hay ningún gen que haya sido eliminado.
+
+Con la función plotGeneQC podemos evaluar las expresiones en logCPM de los genes que fueron eliminados en las distintas muestras. La función también incluye un histograma que muestra la distribución del porcentaje de genes no expresados en todos los ROIs. Por defecto se grafican los 9 genes principales (ordenados por su expresión media), pero esto puede modificarse con el parámetro top_n.
+
+Además, se pueden ordenar las muestras (con ordannots) o colorear y cambiar la forma de los puntos según anotaciones específicas para examinar mejor factores biológicos o experimentales que influyen en la expresión de esos genes (por ejemplo, genes muy expresados en ciertos tipos de tejido o bajo determinadas condiciones de tratamiento).
+Estos genes deben ser evaluados por expertos para determinar si tienen importancia biológica o experimental, lo cual también sirve como advertencia sobre si los experimentos funcionaron como se esperaba.
+```{r}
+plotGeneQC(datos, ordannots = "regions", col = regions, point_size = 2)
+```
+# 2.3 Control de calidad (QC) de ROIs
+
+En el control de calidad a nivel de ROI, primero se busca identificar ROI(s) con bajo tamaño de biblioteca y/o bajo recuento de células, ya que se consideran muestras de baja calidad por insuficiente profundidad de secuenciación o falta de ARN en la región seleccionada. Se incluyen histogramas de frecuencia tanto para el tamaño de biblioteca como para el recuento de núcleos, lo que ayuda a detectar distribuciones anómalas.
+
+Para filtrar muestras de baja calidad, se define un umbral mínimo de recuento de células, en este caso 150 células. Además, se puede investigar si los ROI de baja calidad provienen de uno o dos experimentos específicos, estratificando los puntos por nombre de lámina (slide).
+```{r}
+plotROIQC(datos, x_threshold = 150, color = SlideName)
+```
+Se evalúa la relación entre el tamaño de biblioteca y el recuento de núcleos mediante un gráfico de dispersión, donde se espera una correlación positiva. Es normal encontrar algunos ROI con tamaño de biblioteca relativamente bajo pero con un número razonable de células. En este dataset, la relación entre tamaño de biblioteca y recuento de células es relativamente estable, sin anomalías evidentes.
+
+```{r}
+qc <- colData(datos)$AOINucleiCount > 150
+table(qc)
+datos <- datos[,qc]
+```
+Tenemos 11 ROI que no cumplen con tener más de 150 núcleos celulares por ROI.
+
+La función plotROIQC analiza por defecto el recuento de núcleos y el tamaño de la biblioteca de cada ROI.
+Se puede cambiar los ejes x o y para cualquier otra estadística que se desee evaluar, usando los parámetros x_axis o y_axis.
+Por ejemplo, se puede graficar el tamaño del área frente al tamaño de la biblioteca.
+```{r}
+plotROIQC(datos,  x_axis = "AOISurfaceArea", x_lab = "AreaSize", y_axis = "lib_size", y_lab = "Library size", col = SlideName)
+```
+# 2.4 Relative log expresion distributiin (RLE)
+
+Después del filtrado, usamos la función plotRLExpr para visualizar la expresión logarítmica relativa (RLE) de los datos y detectar posibles variaciones técnicas.
+Se analiza la distancia relativa entre la mediana del RLE de cada ROI (el punto en el diagrama de caja) y el cero. Cuanto más cerca de cero la distancia, más comparables son los datos entre ellos y menos variabilidad técnica hay en los datos.
+
+Por defecto, se grafica el RLE de los conteos sin normalizar, donde se espera que la mayor parte de la variación se deba a diferencias en el tamaño de la biblioteca.
+```{r}
+plotRLExpr(datos)
+```
+Usando assay = 2, se reduce muchisimo esta variación técnica.
+
+Podemos analizarla en ordannots = 'SlideName' o 'Type'
+```{r}
+plotRLExpr(datos, ordannots = "SlideName", assay = 2, color = SlideName)
+plotRLExpr(datos, ordannots = "Type", assay = 2, color = Type)
+```
+Se ven en ambos casos más diferencias entre grupos que intra grupos.
+
+# 2.5 Reducción de dimensionalidad
+
+# Análisis de Componentes Principales (PCA) 
+Podemos realizar un análisis de componentes principales sobre los datos.
+El PCA ayuda a visualizar posibles variaciones sistémicas (tanto biológicas como técnicas) y a identificar los factores principales que contribuyen a dichas variaciones.
+```{r}
+set.seed(100)
+datos <- scater::runPCA(datos)
+pca_results <- reducedDim(datos, "PCA")
+drawPCA(datos, precomputed = pca_results, col = Type)
+```
+Ahora estratificamos para SlideName
+```{r}
+drawPCA(datos, precomputed = pca_results, col = SlideName)
+```
+Otras funciones del paquete standR para la visualización de los PCAs.
+```{r}
+plotScreePCA(datos, precomputed = pca_results)
+plotPairPCA(datos, col = Type, precomputed = pca_results, n_dimension = 4)
+plotPairPCA(datos, col = SlideName, precomputed = pca_results, n_dimension = 4)
+plotPCAbiplot(datos, n_loadings = 10, precomputed = pca_results, col = Type)
+```
+# Multidimensional Scaling (MDS)
+Otra forma de reducir dimensionalidad es mediante el MDS.
+```{r}
+standR::plotMDS(datos, assay = 2, color = Type)
+```
+# Uniform Manifold Approximation and Projection (UMAP)
+Otro metodo es UMAP
+```{r}
+set.seed(100)
+
+datos <- scater::runUMAP(datos, dimred = "PCA")
+
+plotDR(datos, dimred = "UMAP", col = Type)
+plotDR(datos, dimred = "UMAP", col = SlideName)
+```
+
+```{r}
+datos <- findNCGs(datos, batch_name = "SlideName", top_n = 300)
+for (i in seq(5)){
+datos_ruv <- geomxBatchCorrection(datos, factor = "Type",
+NCGs = metadata(datos)$NCGs, k =i)
+print(plotPairPCA(datos_ruv, assay = 2, n_dimension = 4, color = Type, title = paste0("k = ",i)))
+}
+```
+### 3. Normalización
+
+Si se identifican variaciones técnicas en los pasos anteriores de QC, antes de realizar cualquier análisis posterior es necesario normalizar los datos para corregir o minimizar dichas variaciones.
+
+El paquete standR ofrece varias opciones de normalización: TMM, RPKM, TPM, CPM, upperquartile y sizefactor.
+
+RPKM y TPM requieren información de la longitud de los genes (agregar la columna genelength al rowData del objeto).
+
+Para TMM, upperquartile y sizefactor, los factores de normalización se almacenan en los metadatos.
+
+En el tutorial se utiliza el método TMM.
+```{r}
+datos_tmm <- geomxNorm(datos, method = "TMM")
+```
+Para evaluar si la normalización eliminó las variaciones no deseadas, se utilizan los gráficos RLE y PCA conjuntamente con los factores de interés.
+```{r}
+plotRLExpr(datos_tmm, assay = 2, color = SlideName) + ggtitle("TMM")
+```
+En este caso, del gráfico RLE se observa que la mayoría de las medianas están cerca de cero, lo que indica que gran parte de las variaciones técnicas han sido eliminadas.
+```{r}
+set.seed(100)
+
+datos_tmm <- scater::runPCA(datos_tmm)
+
+pca_results_tmm <- reducedDim(datos_tmm, "PCA")
+
+plotPairPCA(datos_tmm, precomputed = pca_results_tmm, color = Type)
+plotPairPCA(datos_tmm, precomputed = pca_results_tmm, color = SlideName)
+```
+Sin embargo, en los gráficos de PCA todavía se confunden los grupos en la distinción de láminas, lo que confunde la biología conocida de interés (diferencia entre enfermedad y normal).
+
+### 4. Corrección por efectos de lote
+
+Cada lámina generalmente solo puede contener unos pocos segmentos de tejido, por lo que es común que los datos de DSP estén afectados por el efecto de lote introducido por las diferentes láminas.
+
+El paquete standR ofrece dos enfoques para corregir efectos de lote: RUV4 y Limma. Otros métodos, como RUVg, están disponibles en la versión en desarrollo.
+
+# RUV4
+La función findNCGs permite identificar los NCGs (Negative Control Genes) en los datos.
+En este caso, como el efecto de lote se debe principalmente a las láminas, se busca identificar NCGs a través de todas las láminas.
+Por ello, el parámetro batch_name se estableció en “SlideName”, y se seleccionaron los 300 genes menos variables (ordenados por coeficiente de variación) entre las distintas láminas como NCGs.
+Estos genes se almacenan en el objeto bajo el nombre “NCGs”.
+```{r}
+datos <- findNCGs(datos, batch_name = "SlideName", top_n = 300)
+```
+Se ha creado una columna con los NCGs.
+
+Para la corrección con RUV4, la función requiere 3 parámetros adicionales además del objeto de entrada:
+
+
+factors: el factor de interés, es decir, la variación biológica que se desea conservar.
+
+
+NCGs: la lista de genes de control negativo identificados con la función findNCGs.
+
+
+k: el número de factores no deseados a utilizar. Según la documentación de RUV, se recomienda usar el k más pequeño posible que elimine la variación técnica observada.
+
+Buscamos qué k es la mejor para este análisis.
+```{r}
+for(i in seq(5)){
+  datos_ruv <- geomxBatchCorrection(datos, factors = "Type", 
+                   NCGs = metadata(datos)$NCGs, k = i)
+  
+  print(plotPairPCA(datos_ruv, assay = 2, n_dimension = 4, color = Type, title = paste0("k = ", i)))
+  
+}
+```
+Elejimos k=2 como mejor resultado.
+```{r}
+datos_ruv <- geomxBatchCorrection(datos, factors = "Type",
+NCGs = metadata(datos)$NCGs, k = 2)
+
+set.seed(100)
+
+datos_ruv <- scater::runPCA(datos_ruv)
+
+pca_results_ruv <- reducedDim(datos_ruv, "PCA")
+
+plotPairPCA(datos_ruv, precomputed = pca_results_ruv, color = Type, title = "RUV4, k = 2", n_dimension = 4)
+
+plotPairPCA(datos_ruv, precomputed = pca_results_ruv, color = SlideName, title = "RUV4, k = 2", n_dimension = 4)
+```
+Se puede observar bastante buena separación entre los distintos tipos celulares.
+Pero resultados poco claros en cuanto a la distinción de las láminas.
+
+# Limma
+La función requiere 2 parámetros adicionales además del objeto de entrada.
+
+batch: un vector que indica la información de lote de todas las muestras.
+
+design: una matriz de diseño generada a partir de model.matrix.
+```{r}
+datos_lrb <- geomxBatchCorrection(datos,
+                       batch = colData(datos)$SlideName, method = "Limma",
+                       design = model.matrix(~Type, data = colData(datos)))
+```
+Nuevamente, se utilizan gráficos de QC, como el PCA, para inspeccionar y evaluar la efectividad del proceso de corrección de efectos de lote aplicado.
+```{r}
+plotPairPCA(datos_lrb, assay = 2, color = Type, title = "Limma remove Batch")
+plotPairPCA(datos_lrb, assay = 2, color = SlideName, title = "Limma remove Batch")
+```
+Se recomienda utilizar estadísticas resumidas para evaluar la efectividad de la corrección por lote.
+
+Las 6 estadísticas resumidas incluidas en el paquete son:
+
+  - Adjusted Rand Index
+
+  - Coeficiente de similitud de Jaccard
+
+  - Coeficiente de Silhouette
+
+  - Coeficiente Chi-cuadrado
+
+  - Distancia de Mirkin
+
+  - Coeficiente de solapamiento (Overlap Coefficient)
+
+Esta evaluación se puede realizar con la función plotClusterEvalStats.
+```{r}
+datos_list <- list(datos, datos_ruv, datos_lrb)
+
+plotClusterEvalStats(spe_list = datos_list,
+                     bio_feature_name = "Type",
+                     batch_feature_name = "SlideName",
+                     data_names = c("Raw","RUV4","Limma"))
+```
+Se presentan los resultados de las estadísticas resumidas para los dos métodos de normalización utilizados en este taller (RUV4 y Limma), así como para los datos no corregidos.
+La puntuación de cada método se muestra en un gráfico de barras con las seis estadísticas resumidas, organizadas en dos secciones: biología y lote.
+
+Para los factores biológicos de interés definidos en la corrección por lote, un puntaje más alto es mejor.
+
+Para los efectos de lote, un puntaje más bajo es preferible.
+
+En este conjunto de datos, se observa que al estratificar según subtipos de tejido o al cuantificar el efecto de lote, RUV4 y Limma tienen un rendimiento similar.
+
+Además, se pueden visualizar los resultados mediante gráficos RLE de los conteos normalizados para determinar qué corrección por lote funciona mejor en este conjunto de datos.
+```{r}
+plotRLExpr(datos_ruv, assay = 2, color = SlideName) + ggtitle("RUV4")
+plotRLExpr(datos_lrb, assay = 2, color = SlideName) + ggtitle("Limma remove Batch")
+```
+Al graficar los RLE tanto de los datos corregidos con RUV4 como con Limma, se observa que ambos métodos tienen un desempeño similar.
+Por lo tanto, para el análisis de expresión diferencial posterior, se puede utilizar RUV4 o Limma como método de corrección por lote para este dataset específico.
+
+### 5. Análisis posteriores (downstream)
+
+Para los análisis posteriores, como los de expresión diferencial (DE), standR no proporciona funciones específicas.
+
+Se recomienda integrar el flujo de trabajo con pipelines establecidos, como edgeR, limma-voom o DESeq2, que utilizan modelos lineales y aprovechan la información de todos los genes, siendo más adecuados para datasets complejos con múltiples factores experimentales. 
+No se recomienda usar análisis simples como t-test para analizar datos de GeoMx DSP.
+
+En este taller,se desarrollará el análisis DE usando el pipeline limma-voom.
+
+Se ha mostrado previamente que, para este dataset, usar RUV4 con k = 2 es la estrategia adecuada para corregir el efecto de lote y otras variaciones técnicas.
+
+Sin embargo, los conteos normalizados no se deben usar directamente en modelos lineales. Para el modelado lineal es mejor incluir la matriz de pesos generada por la función geomxBatchCorrection como covariable. Esta matriz de pesos se encuentra en el colData del objeto.
+```{r}
+colData(datos_ruv)[,seq(ncol(colData(datos_ruv))-1, ncol(colData(datos_ruv)))] |>
+head()
+```
+# 5.1 Establecimiento de una matriz de diseño y contrastes
+
+En nuestro análisis, nos interesa identificar qué genes están diferencialmente expresados en las distintas regiones de tejido de las muestras.
+Para ello, se construye una matriz de diseño con la información de los subtipos de tejido.
+Se añaden las matrices W resultantes de RUV4 a la matriz de diseño como covariables para usar los datos corregidos por efecto de lote.
+```{r}
+library(edgeR)
+library(limma)
+
+dge <- SE2DGEList(datos_ruv)
+
+design <- model.matrix(~0 + Type + ruv_W1 + ruv_W2, data = colData(datos_ruv))
+colnames(design)
+```
+Arreglamos los nombres.
+```{r}
+colnames(design) <- gsub("^Type","",colnames(design))
+colnames(design) <- gsub(" ","_",colnames(design))
+colnames(design)
+```
+Construímos la matriz.
+```{r}
+contr.matrix <- makeContrasts(
+BvT = B_cell_zone - T_cell_zone,
+levels = colnames(design)
+)
+View(contr.matrix)
+```
+Se recomienda filtrar los genes con baja cobertura en el dataset para obtener una relación media-varianza más precisa y reducir el número de pruebas estadísticas.
+En este caso, se utiliza la función filterByExpr del paquete edgeR para filtrar los genes según la matriz de diseño, conservando la mayor cantidad posible de genes con conteos razonables.
+```{r}
+keep <- filterByExpr(dge,design)
+table(keep)
+rownames(datos)[!keep]
+dge_all <- dge[keep, ]
+```
+Contiene solo un gen que no supera las características y es el ST6GALNAC1.
+
+# 5.2 BCV
+
+El CV biológico (BCV) es el coeficiente de variación que refleja cómo varía la abundancia real (desconocida) de un gen entre muestras replicadas de ARN.
+
+En el gráfico de BCV de un dataset de GeoMx hay tres aspectos principales a observar:
+
+Tendencia de dispersión: Se espera que la dispersión se aplane en los genes con mayor conteo.
+
+Tendencia común: Debe ser relativamente pequeña. En RNA-seq, se espera entre 0.2 y 0.4 en muestras humanas y entre 0.05 y 0.2 en ratón y líneas celulares. En GeoMx, al muestrear segmentos de tejido humano, se espera que sea menor que en RNA-seq humano.
+
+Genes con bajo conteo: Hay que tener cuidado si aparecen genes con alto BCV y bajo conteo.
+
+Además, genes con alto BCV también deben revisarse, ya que probablemente se identifiquen como genes diferencialmente expresados (DE) y puedan estar influyendo en la variación observada en los gráficos PCA. 
+
+MOLT LENT!!!
+```{r}
+dge_all <- estimateDisp(dge_all, design = design, robust = TRUE)
+
+plotBCV(dge_all, legend.position = "topleft", ylim = c(0, 1.3))
+bcv_df <- data.frame(
+  'BCV' = sqrt(dge_all$tagwise.dispersion),
+  'AveLogCPM' = dge_all$AveLogCPM,
+  'gene_id' = rownames(dge_all)
+)
+
+highbcv <- bcv_df$BCV > 0.8
+highbcv_df <- bcv_df[highbcv, ]
+points(highbcv_df$AveLogCPM, highbcv_df$BCV, col = "red")
+text(highbcv_df$AveLogCPM, highbcv_df$BCV, labels = highbcv_df$gene_id, pos = 4)
+```
+### 6. Análisis de expresión diferencial (DE)
+En la línea de análisis limma-voom, el modelado lineal se realiza sobre los valores log-CPM utilizando las funciones voom, lmFit, contrasts.fit y eBayes.
+En casos específicos donde los usuarios desean considerar más cuidadosamente los cambios de pliegue (log fold changes) en el análisis estadístico, se aplica la función treat.
+
+El método voom (de limma) estima cómo cambia la variabilidad de los genes dependiendo de su expresión.
+La línea roja debería suavizar la nube de puntos. Eso significa que voom estimó bien la relación media–varianza.
+```{r}
+v <- voom(dge_all, design, plot = TRUE)
+```
+Cada punto negro es un gen.
+
+En el eje X está el log2 del tamaño de los conteos (log-CPM).
+
+En el eje Y está la desviación estándar estimada para cada gen.
+
+La línea roja es la tendencia media-variancia ajustada.
+
+```{r}
+fit <- lmFit(v) #Ajuste del modelo lineal (lm)
+
+fit_contrast <- contrasts.fit(fit, contrasts = contr.matrix) #Aplicación de contraste, para comparar lo que nos interesa
+
+efit <- eBayes(fit_contrast, robust = TRUE) #Estadística Bayesiana, modera varianza entre genes, aumenta estabilidad estadística, produce p-values ajustados con modelo de Bayes
+```
+Se mide qué genes son estadísticamente significativos.
+```{r}
+results_efit<- decideTests(efit, p.value = 0.05)
+summary_efit <- summary(results_efit)
+
+summary_efit
+```
+Down: Genes con expresión disminuida	1673
+Up:	Genes con expresión aumentada	1657
+NotSig:	Genes no significativos	15345
+
+Podemos obtener los resultados DE usando TopTable function.
+```{r}
+de_results_BvT <- topTable(efit, coef = 1, sort.by = "P", n = Inf)
+
+de_genes_toptable_BvT <- topTable(efit, coef = 1, sort.by = "P", n = Inf, p.value = 0.05)
+```
+Ahora visualizamos estos resultados con un MA.
+
+```{r}
+de_results_BvT %>% 
+  mutate(DE = ifelse(logFC > 0 & adj.P.Val <0.05, "UP", 
+                       ifelse(logFC <0 & adj.P.Val<0.05, "DOWN", "NOT DE"))) %>%
+  ggplot(aes(AveExpr, logFC, col = DE)) + 
+  geom_point(shape = 1, size = 1) + 
+  geom_text_repel(data = de_genes_toptable_BvT %>% 
+                    mutate(DE = ifelse(logFC > 0 & adj.P.Val <0.05, "UP", 
+                       ifelse(logFC <0 & adj.P.Val<0.05, "DOWN", "NOT DE"))) %>%
+                    rownames_to_column(), aes(label = rowname)) +
+  theme_bw() +
+  xlab("Average log-expression") +
+  ylab("Log-fold-change") +
+  ggtitle("B cell zone vs. T cell zone in Lymph node (limma-voom)") +
+  scale_color_manual(values = c("blue","gray","red")) +
+  theme(text = element_text(size=15))
+```
+Como la matriz de contraste se calculó Contr.matrix= Bcells - Tcells, lo qu eobtenemos en el gráfico se interpreta en rojo los genes sobreexpresados en células B, y en azul los genes sobreexpresados en células T. La zona gris son genes no diferencialmente expresados.
+También podemos hacer una tabla interactiva usando el paquete DT.
+```{r}
+library(DT)
+
+updn_cols <- c(RColorBrewer::brewer.pal(6, 'Greens')[2], RColorBrewer::brewer.pal(6, 'Purples')[2])
+
+de_genes_toptable_BvT %>% 
+  dplyr::select(c("logFC", "AveExpr", "P.Value", "adj.P.Val")) %>%
+  DT::datatable(caption = 'B cell zone vs. T cell zone in Lymph node (limma-voom)') %>%
+  DT::formatStyle('logFC',
+                valueColumns = 'logFC',
+                backgroundColor = DT::styleInterval(0, rev(updn_cols))) %>%
+  DT::formatSignif(1:4, digits = 4)
+```
+### 7. GSEA y visualización con vissE
+GSEA (Análisis de Enriquecimiento de Conjuntos de Genes) es un método bioinformático que permite determinar si un conjunto de genes previamente definido (por ejemplo, una ruta metabólica, una vía de señalización, un conjunto de genes de un tipo celular) muestra cambios coordinados entre dos condiciones biológicas.
+
+“FDR < 0.05 indica que el conjunto de genes está significativamente enriquecido.”
+
+Seleccionamos los siguientes conjuntos de genes para realizar un análisis de enriquecimiento de conjuntos de genes:
+
+MSigDB Hallmarks: conjuntos de genes de la colección hallmarks de MSigDB.
+
+MSigDB C2: conjuntos de genes de la colección C2 de MSigDB, que contiene conjuntos de genes curados, como aquellos obtenidos de bases de datos como BioCarta, KEGG, PID y Reactome, así como de experimentos de perturbación química o genética.
+
+GO BP: procesos biológicos de la base de datos de ontología génica (gene ontology).
+
+GO MF: funciones moleculares de la base de datos de ontología génica.
+
+GO CC: componentes celulares de la base de datos de ontología génica.
+
+Cargamos los conjuntos de genes utilizando el paquete msigdb y extraemos únicamente los conjuntos de genes que describimos anteriormente.
+```{r}
+library(msigdb)
+library(GSEABase)
+
+msigdb_hs <- getMsigdb(version = '7.2') 
+msigdb_hs <- appendKEGG(msigdb_hs) #Añadimos información de vías KEGG
+
+sc <- listSubCollections(msigdb_hs) #Lista todas las subcolecciones dentro de MSigDB
+
+gsc <- c(subsetCollection(msigdb_hs, c('h')),
+  subsetCollection(msigdb_hs, 'c2', sc[grepl("^CP:",sc)]),
+  subsetCollection(msigdb_hs, 'c5', sc[grepl("^GO:",sc)])) %>%
+  GeneSetCollection() #filtra las subcolecciones de interés y las organiza en un objeto con el formato estándar para análisis de enriquecimiento con funciones como fry o GSEA.
+```
+Hacemos un preprocesamiento en estos conjuntos genéticos, filtrando los conjuntos de genes que contienen menos de 5 genes y creando una lista de vectores de índices para formatear los resultados antes de aplicar fry.
+```{r}
+fry_indices <- ids2indices(lapply(gsc, geneIds), rownames(v), remove.empty = FALSE)
+names(fry_indices) <- sapply(gsc, setName)
+
+gsc_category <- sapply(gsc, function(x) bcCategory(collectionType(x)))
+gsc_category <- gsc_category[sapply(fry_indices, length) > 5]
+
+gsc_subcategory <- sapply(gsc, function(x) bcSubCategory(collectionType(x)))
+gsc_subcategory <- gsc_subcategory[sapply(fry_indices, length) > 5]
+
+fry_indices <- fry_indices[sapply(fry_indices, length) > 5]
+
+names(gsc_category) = names(gsc_subcategory) = names(fry_indices)
+```
+Ahora aplicamos fry con todos los conjuntos de genes filtrados.
+
+Dividimos los conjuntos de genes por categoria (gsc_category) y aplicamos fry de limma para cada categoría.
+
+Diseñamos una función para el output de fry, donde combinamos los resultados en un data frame y la aplicamos.
+```{r}
+fry_indices_cat <- split(fry_indices, gsc_category[names(fry_indices)])
+fry_res_out <- lapply(fry_indices_cat, function (x) {
+  limma::fry(v, index = x, design = design, contrast = contr.matrix[,1], robust = TRUE)
+})
+
+post_fry_format <- function(fry_output, gsc_category, gsc_subcategory){
+  names(fry_output) <- NULL
+  fry_output <- do.call(rbind, fry_output)
+  fry_output$GenesetName <- rownames(fry_output)
+  fry_output$GenesetCat <- gsc_category[rownames(fry_output)]
+  fry_output$GenesetSubCat <- gsc_subcategory[rownames(fry_output)]
+  return(fry_output)
+}
+
+fry_res_sig <- post_fry_format(fry_res_out, gsc_category, gsc_subcategory) %>%
+  as.data.frame() %>%
+  filter(FDR < 0.05) 
+
+head(fry_res_sig)
+```
+Graficamos los 20 conjuntos de genes Up y Down - Regulated.
+```{r}
+fry_res_sig %>%
+  arrange(FDR) %>%
+  filter(Direction == "Up") %>%
+  .[seq(20),] %>%
+  mutate(GenesetName = factor(GenesetName, levels = .$GenesetName)) %>%
+  ggplot(aes(GenesetName, -log(FDR))) +
+  geom_bar(stat = "identity", fill = "red") +
+  theme_bw() +
+  coord_flip() +
+  ggtitle("Up-regulated")
+
+fry_res_sig %>%
+  arrange(FDR) %>%
+  filter(Direction == "Down") %>%
+  .[seq(20),] %>%
+  mutate(GenesetName = factor(GenesetName, levels = .$GenesetName)) %>%
+  ggplot(aes(GenesetName, -log(FDR))) +
+  geom_bar(stat = "identity", fill = "blue") +
+  theme_bw() +
+  coord_flip() +
+  ggtitle("Down-regulated")
+```
+Podemos observar que muchos conjuntos de genes relacionados con el sistema inmunológico están significativamente enriquecidos. Los conjuntos de genes relacionados con células B están enriquecidos entre los genes up-regulados, mientras que los conjuntos de genes relacionados con células T están enriquecidos entre los genes down-regulados.
+
+Una forma alternativa de resumir los resultados de GSEA es visualizar los conjuntos de genes comunes como un grupo.
+
+Podemos utilizar los paquetes igraph y vissE para realizar clustering sobre los conjuntos de genes enriquecidos y visualizarlos usando un algoritmo basado en nubes de palabras (word cloud) y una visualización basada en redes (network-based).Mediante la aplicación de dovissE.
+```{r}
+library(vissE)
+library(igraph)
+dovissE <- function(fry_out, de_table, topN = 6, title = "", specific_clusters = NA){
+  
+  #Selección de conjuntos de genes significativos 
+  n_row = min(1000, nrow(fry_out))
+  gs_sig_name <- fry_out %>% 
+    filter(FDR < 0.05) %>%
+    arrange(FDR) %>% 
+    .[1:n_row,] %>% 
+    rownames()
+  gsc_sig <- gsc[gs_sig_name,]
+  
+  #Calculo de conjuntos de genes que comparten genes, el solapamiento (>15%), y construcción de red basada en el solapamiento
+  gs_ovlap <- computeMsigOverlap(gsc_sig, thresh = 0.15)
+  gs_ovnet <- computeMsigNetwork(gs_ovlap, gsc)
+  
+  gs_stats <- -log10(fry_out[gs_sig_name,]$FDR)
+  names(gs_stats) <- gs_sig_name
+  
+  #identify clusters
+  grps = cluster_walktrap(gs_ovnet)
+  #extract clustering results
+  grps = groups(grps)
+  #sort by cluster size
+  grps = grps[order(sapply(grps, length), decreasing = TRUE)]
+  
+  # write output
+  output_clusters <- list()
+  for(i in seq(length(grps))){
+    output_clusters[[i]] <- data.frame(geneset = grps[[i]], cluster = paste0("cluster",names(grps)[i]))
+  }
+  output_clusters <<- output_clusters %>% bind_rows()
+  
+  #Seleccion de clusters a visualizar
+  if(is.na(specific_clusters)){
+    grps <- grps[1:topN]
+  } else {
+    grps <- grps[specific_clusters %>% as.character()]
+  }
+  
+  #plot the top 12 clusters
+  set.seed(36) #set seed for reproducible layout
+  p1 <<- plotMsigNetwork(gs_ovnet, markGroups = grps, 
+                        genesetStat = gs_stats, rmUnmarkedGroups = TRUE) +
+    scico::scale_fill_scico(name = "-log10(FDR)")
+  
+  p2 <<- plotMsigWordcloud(gsc, grps, type = 'Name')
+  
+  genes <- unique(unlist(geneIds(gsc_sig)))
+  
+  genes_logfc <- de_table %>% rownames_to_column() %>% filter(rowname %in% genes) %>% .$logFC
+  names(genes_logfc) <- de_table %>% rownames_to_column() %>% filter(rowname %in% genes) %>% .$rowname
+  
+  p3 <<- plotGeneStats(genes_logfc, gsc, grps) +
+    geom_hline(yintercept = 0, colour = 2, lty = 2) +
+    ylab("logFC")
+  
+  #p4 <- plotMsigPPI(ppi, gsc, grps[1:topN], geneStat = genes_logfc) +
+  #  guides(col=guide_legend(title="logFC"))
+  
+  print(p2 + p1 + p3 + patchwork::plot_layout(ncol = 3) +
+          patchwork::plot_annotation(title = title))  
+    
+}
+```
+Un análisis típico con vissE produce tres gráficos:
+
+Nube de palabras (word-cloud): realiza un análisis de minería de texto para anotar automáticamente los clusters de conjuntos de genes (en este caso, los 9 principales, ordenados por tamaño de cluster y por -log10(FDR)).
+
+Gráfico de red (network plot): visualiza los conjuntos de genes como una red, donde los nodos son conjuntos de genes y las aristas conectan conjuntos que comparten genes.
+
+Gráfico de estadísticas de genes (gene statistic plot): muestra una estadística específica de cada gen (en este caso, log fold-change) para todos los genes que pertenecen a los conjuntos de genes del cluster, frente al número de conjuntos de genes a los que pertenece cada gen.
+
+
+En conjunto, estos tres gráficos permiten:
+
+Identificar procesos biológicos de orden superior.
+Caracterizar estos procesos mediante las nubes de palabras.
+Evaluar las relaciones entre procesos de orden superior con el gráfico de red.
+Relacionar las estadísticas específicas del experimento con los procesos identificados usando el gráfico de estadísticas de genes.
+
+De esta manera, se proporciona una visión integrada de los datos. (TARDA MUCHO EN CARGAR LA FIGURA)
+
+```{r}
+dovissE(fry_res_sig, de_genes_toptable_BvT, topN = 9, title = "B cell zone vs. T cell zone in Lymph node." )
+```
+# 8. Desconvolución celular
+Es una técnica que permite estimar las proporciones de diferentes tipos celulares en muestras obtenidas de un tejido.
+
+En el paquete standR, podemos usar la función prepareSpatialDecon para comunicar un objeto SpatialExperiment al paquete SpatialDecon, con el fin de realizar la desconvolución celular.
+Sin embargo, SpatialDecon requiere sondas negativas para establecer el fondo de los datos. Por lo tanto, es necesario reconstruir el objeto SpatialExperiment usando el parámetro rmNegProbe = FALSE, lo que desactiva la eliminación de las sondas negativas, y luego volver a ejecutar los pasos de control de calidad (QC).
+
+Realizamos la preparación de los datos, des de un punto de partida muy inicial.
+Leer datos, QC por ROI, QC conteo núcleos >150, normalización por TMM. 
+```{r}
+library(SpatialDecon)
+
+datos_d <- readGeoMx(countFile, sampleAnnoFile, featureAnnoFile, rmNegProbe = FALSE)
+
+datos_d <- addPerROIQC(datos_d, rm_genes = TRUE)
+
+qc <- colData(datos_d)$AOINucleiCount > 150
+
+datos_d <- datos_d[, qc]
+
+datos_d_tmm <- geomxNorm(datos_d, method = "TMM")
+```
+El objeto que obtenemos de prepareSpatialDecon contiene dos matrices, la matriz de conteos normalizados y la matriz del modelo de fondo para la desconvolución celular.
+```{r}
+datos_d <- prepareSpatialDecon(datos_d_tmm)
+
+```
+Luego podemos seguir la guía de SpatialDecon para realizar la desconvolución celular.
+
+En este caso, usamos el perfil de tipos celulares que viene con el paquete SpatialDecon.
+
+La matriz llamada “SafeTME” está diseñada para estimar células inmunes y del estroma en el microambiente tumoral.
+
+Esta matriz fue creada específicamente para evitar genes que se expresan comúnmente en células cancerosas, de modo que la estimación de los tipos celulares no se vea sesgada.
+```{r}
+data("safeTME")
+
+heatmap(sweep(safeTME, 1, apply(safeTME, 1, max), "/"),
+        labRow = NA, margins = c(10, 5))
+```
+Performamos la desconvolución.
+```{r}
+res <- spatialdecon(norm = datos_d$normCount,
+                   bg = datos_d$backGround,
+                   X = safeTME,
+                   align_genes = TRUE)
+```
+Visualizamos las salidas de esta función focalizandonos en la zona de células B y T.
+```{r}
+samples_subset <- colnames(datos_d_tmm)[colData(datos_d_tmm)$Type %in%  c("T cell zone", "B cell zone")]
+
+subset_prop <- res$prop_of_all[,samples_subset]
+
+spe_sub <- datos_d_tmm[,samples_subset]
+
+subset_prop %>%
+  as.data.frame() %>%
+  rownames_to_column("CellTypes") %>%
+  gather(samples, prop, -CellTypes) %>%
+  ggplot(aes(samples, prop, fill = CellTypes)) +
+  geom_bar(stat = "identity", position = "stack", color = "black", width = .7) +
+  coord_flip() +
+  theme_bw() +
+  theme(legend.position = "bottom")
+```
+Podemos hacernos una idea de en cada área de tejido elegida para el análisis, qué proporción de células tenemos de cada tipo.
+
+# 9. Análisis de proporción diferencial
+Este análisis tiene como objetivo identificar cambios en la abundancia relativa de tipos celulares entre diferentes condiciones experimentales.
+```{r}
+library(speckle)
+source(file.path(datadir,"convertDataToList.R"))
+```
+Primero necesitamos usar la función convertDataToList para convertir los datos de proporciones, es decir, el resultado de la deconvolución de tipos celulares, en un formato que pueda ser utilizado por Propeller.
+```{r}
+propslist <- convertDataToList(subset_prop, 
+                               data.type = c("proportions"),
+                               transform="asin",
+                               scale.fac=colData(spe_sub)$AOINucleiCount)
+```
+Propeller usa un modelo de matriz para realizar el test estadístico.
+```{r}
+design <- model.matrix(~ 0 + Type + SlideName, data = as.data.frame(colData(spe_sub)))
+
+colnames(design) <- str_remove(colnames(design), pattern = "Type") %>%
+  str_replace_all(., " ", "_")
+
+contr <- makeContrasts(B_cell_zone - T_cell_zone,levels=design)
+
+
+outs <- propeller.ttest(propslist, design, contr, robust=TRUE,trend=FALSE, sort=TRUE)
+```
+Hacemos la visualización con violin plots.
+```{r}
+diff_ct <- outs %>% 
+  filter(FDR < 0.05) %>%
+  rownames()
+
+colData(spe_sub)$samples_id <- rownames(colData(spe_sub))
+
+subset_prop[diff_ct,] %>%
+  as.data.frame() %>%
+  rownames_to_column("CellTypes") %>%
+  gather(samples, prop, -CellTypes) %>%
+  left_join(as.data.frame(colData(spe_sub)), by = c("samples"="samples_id")) %>%
+  ggplot(aes(Type, prop, fill = CellTypes)) +
+  geom_violin() +
+  facet_wrap(~CellTypes) +
+  theme_bw() +
+  xlab("") +
+  ylab("Proportion")
+
+```
+En este caso, como era de esperar, al comparar fragmentos de tejido de la zona de células B con la zona de células T del ganglio linfático humano, podemos observar más células B naïve en la zona de células B y más células T naïve en la zona de células T.
